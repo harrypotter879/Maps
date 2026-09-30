@@ -1,199 +1,223 @@
-# 🌐 PathFinder (Stage 1)
+# 🌐 PathFinder (Stage 2: Real-World Map Integration)
 
-A clean, modular, zero-dependency shortest-pathfinding engine in Python implementing **Dijkstra's Algorithm** from scratch using a min-heap priority queue (`heapq`) and an adjacency-list graph representation.
+A modular, high-performance shortest-pathfinding engine in Python implementing **Dijkstra's Algorithm from scratch** on real-world OpenStreetMap (OSM) road networks, featuring interactive web map visualization powered by **Folium**.
 
-Designed as the foundational routing core for a future production-grade navigation platform (with planned support for OpenStreetMap data ingestion, A* heuristic pathfinding, and live traffic weighting).
+Originally developed in Stage 1 with a fictional regional road graph, Stage 2 expands the platform to ingest real-world geospatial networks (initial deployment: **Ranchi, Jharkhand, India**), mapping actual streets, intersections, and road curvature while strictly retaining our custom Dijkstra routing engine.
 
 ---
 
 ## 📋 Table of Contents
 - [Features](#-features)
 - [Project Architecture](#-project-architecture)
-- [Road Network Map](#-road-network-map)
-- [Requirements & Installation](#-requirements--installation)
+- [Real-World Map Coverage (Ranchi)](#-real-world-map-coverage-ranchi)
+- [Installation & Virtual Environment](#-installation--virtual-environment)
 - [Usage Guide](#-usage-guide)
-  - [Interactive Mode](#1-interactive-prompt-mode)
-  - [CLI Argument Mode](#2-direct-command-line-mode)
-  - [Listing Available Locations](#3-listing-available-locations)
+  - [1. Real-World Landmark Routing](#1-real-world-landmark-routing)
+  - [2. GPS Coordinate Routing](#2-gps-coordinate-routing)
+  - [3. Interactive Map Generation](#3-interactive-map-generation)
+  - [4. Interactive Prompt Mode](#4-interactive-prompt-mode)
+  - [5. Listing Landmarks & Fictional Towns](#5-listing-landmarks--fictional-towns)
+  - [6. Stage 1 Fictional Network Mode](#6-stage-1-fictional-network-mode-backward-compatible)
+  - [7. Refreshing Live OpenStreetMap Data](#7-refreshing-live-openstreetmap-data)
 - [Algorithm Complexity & Analysis](#-algorithm-complexity--analysis)
 - [Automated Testing](#-automated-testing)
-- [Future Extensibility Roadmap](#-future-extensibility-roadmap)
+- [Roadmap](#-future-roadmap)
 
 ---
 
 ## ✨ Features
 
-- **Zero External Dependencies**: Built strictly using the Python Standard Library (`heapq`, `dataclasses`, `typing`, `time`, `argparse`, `difflib`, `unittest`).
-- **Custom Dijkstra Implementation**: Pure Python implementation with binary min-heap relaxation, early target termination, and path reconstruction.
-- **Weighted Adjacency List Graph**: Memory-efficient representation supporting directed and bidirectional road networks with metadata (road names, distances).
-- **Dual Interface**:
-  - **Interactive CLI**: Guided prompts with live input validation and fuzzy matching for typos.
-  - **Direct Arguments**: Fast programmatic execution with flags (`-s`, `-d`, `-l`).
-- **Comprehensive Route Output**: Step-by-step turn-by-turn itinerary, full route sequence, leg distances, cumulative distance, and microsecond-level execution timing.
-- **Defensive Error Handling**: Detects unreachable destinations (disconnected components), invalid locations (with typo suggestions), negative edge weights, and self-loop trips.
-- **Automated Test Suite**: 32 unit and integration tests covering standard routes, edge cases, cyclic networks, and CLI invocation.
+- **Custom Dijkstra Routing Engine**: Zero reliance on third-party routing libraries (such as NetworkX's or OSMnx's built-in shortest path functions). Every shortest path is calculated using our pure-Python binary min-heap Dijkstra algorithm (`heapq`).
+- **Real-World OpenStreetMap Ingestion**: Converts OSM road segments and intersections into a directed, weighted adjacency-list graph via **OSMnx**.
+- **Interactive Folium Web Maps**: Generates interactive HTML maps (`route_map.html`) displaying:
+  - Custom start/destination markers (green/red with metadata popups).
+  - High-visibility polyline tracing exact road geometries.
+  - Floating HUD card showing route summary, distance, execution time, and segment count.
+- **Fast Sub-50ms Offline Startup**: Pre-cached and serialized road network (`data/ranchi_network.json`) enables instant offline execution, with on-demand Overpass API re-fetching.
+- **Flexible Location Resolution**:
+  - Predefined landmarks (e.g., `Albert Ekka Chowk`, `Ranchi Railway Station`, `Nucleus Mall`, `Morabadi Ground`).
+  - Arbitrary GPS coordinates (`--start-coords 23.3699,85.3253 --dest-coords 23.3512,85.3347`).
+  - Nearest road node matching using vectorized distance approximation.
+- **Full Backward Compatibility**: 100% of Stage 1 functionality, fictional road network tests, and CLI flags are preserved.
+- **Automated Test Suite**: 40 automated unit and integration tests (`unittest`) verifying graph conversion, Dijkstra correctness, coordinate parsing, map generation, and CLI commands.
 
 ---
 
 ## 🏗️ Project Architecture
 
-The project adheres to strict separation of concerns across 5 modular files:
-
 ```text
 Maps/
-├── main.py        # CLI interface, argument parser, user session orchestration
-├── graph.py       # Graph data structure, Edge representation, sample road network
-├── dijkstra.py    # Dijkstra's shortest path algorithm using heapq
-├── display.py     # Terminal formatting, route summary, metrics, and error styling
-├── tests.py       # 32 automated unit and integration tests (unittest)
-└── README.md      # Architecture, usage, and algorithm documentation
+├── main.py              # Unified CLI entry point & interactive session manager
+├── graph.py             # Weighted Graph & Edge dataclasses with geographic coordinate support
+├── dijkstra.py          # Custom Dijkstra algorithm with min-heap priority queue (from scratch)
+├── osm_loader.py        # OSMnx downloader, JSON cache serializer, coordinate resolver
+├── map_view.py          # Folium interactive HTML map generator with markers and HUD
+├── display.py           # Terminal rendering, turn-by-turn road itinerary, performance metrics
+├── tests.py             # 40 automated unit & integration tests (unittest)
+├── requirements.txt     # Stage 2 dependencies (osmnx, folium)
+├── data/
+│   └── ranchi_network.json  # Serialized real-world road network cache (~2,500 nodes, ~6,200 edges)
+└── README.md            # Comprehensive documentation
 ```
 
 ### Module Responsibilities
 
 | Module | Core Responsibility |
 |---|---|
-| [`graph.py`](graph.py) | Defines the `Edge` dataclass, `Graph` adjacency-list class, edge addition/updating, node query methods, and builds the default fictional regional road network `create_sample_road_network()`. |
-| [`dijkstra.py`](dijkstra.py) | Implements `find_shortest_path(graph, source, destination)` using Python's `heapq`. Handles distance relaxation, predecessor tracking, early exit upon settling the destination, and route reconstruction into `PathResult` and `RouteLeg` objects. |
-| [`display.py`](display.py) | Handles all console rendering: turn-by-turn guidance, distance and execution time formatting (converting seconds to `µs`, `ms`, or `s`), columnar location listings, and user-friendly error banners. |
-| [`main.py`](main.py) | Entry point (`python main.py`). Manages CLI flags (`argparse`), location fuzzy resolution (`difflib`), interactive user input loops, and error dispatching. |
-| [`tests.py`](tests.py) | Comprehensive test suite verifying graph integrity, Dijkstra correctness (triangle inequality, multi-hop optimization, cycles, zero weights, disconnected nodes), display output, and CLI behavior. |
+| [`graph.py`](graph.py) | Weighted adjacency-list `Graph` storing node coordinates `(lat, lon)`, edge geometries, and fast vectorized `find_nearest_node()` lookup. |
+| [`dijkstra.py`](dijkstra.py) | Pure-Python Dijkstra algorithm. Operates directly on the converted real-world road network using a binary min-heap (`heapq`) with early destination settling. |
+| [`osm_loader.py`](osm_loader.py) | Ingests real road networks from OpenStreetMap via OSMnx, manages local JSON caching, and resolves landmark names or GPS coordinates to road network nodes. |
+| [`map_view.py`](map_view.py) | Renders Leaflet-powered interactive HTML maps via Folium with color-coded start/end pins, curved route polylines, and floating trip metrics dashboard. |
+| [`display.py`](display.py) | Terminal formatting: turn-by-turn corridor breakdown, distance in meters/kilometers, execution duration in $\mu\text{s}/\text{ms}$, and error notifications. |
+| [`main.py`](main.py) | CLI argument parser (`argparse`), dual-mode selector (Real-World OSM vs Fictional Stage 1), and interactive user interface. |
+| [`tests.py`](tests.py) | Comprehensive test suite covering graph structures, Dijkstra algorithm, coordinate parsing, map generation, and CLI end-to-end integration. |
 
 ---
 
-## 🗺️ Road Network Map
+## 📍 Real-World Map Coverage (Ranchi)
 
-The built-in fictional region features 16 locations across coastal highways, central expressways, northern mountain passes, eastern valleys, and an isolated offshore island:
+The initial real-world deployment covers central **Ranchi, Jharkhand, India** ($2,493$ intersections, $6,265$ directed road segments) centered around Albert Ekka Chowk, including key civic and transit corridors:
 
-```mermaid
-graph TD
-    PM["Port Marina"] ---|"18.5 km (Route 1)"| BV["Bayview"]
-    BV ---|"22.0 km (Route 1)"| SF["Silverfall"]
-    SF ---|"35.0 km (Route 1)"| GH["Grand Haven (Hub)"]
-    
-    SF ---|"28.0 km (I-10)"| RD["Riverdale"]
-    GH ---|"15.0 km (I-10)"| RD
-    RD ---|"24.5 km (I-10)"| OR["Oakridge"]
-    OR ---|"31.0 km (I-10 Ext)"| MW["Mistwood"]
-    
-    GH ---|"42.0 km"| PC["Pinecrest"]
-    SF ---|"50.0 km"| PC
-    PC ---|"19.5 km"| HP["High Peak"]
-    HP ---|"27.0 km"| FF["Frostford"]
-    FF ---|"55.0 km"| RD
-    
-    RD ---|"18.0 km"| GF["Greenfield"]
-    GF ---|"12.0 km"| OR
-    GF ---|"26.0 km"| AP["Amber Plains"]
-    OR ---|"20.0 km"| AP
-    
-    GH ---|"25.0 km"| SV["Sunset Valley"]
-    SV ---|"30.0 km"| IH["Ironhold"]
-    IH ---|"38.0 km"| AP
-    RD ---|"32.0 km"| SV
-
-    subgraph Disconnected Island Region
-        SI["Storm Island"] ---|"14.0 km"| IO["Isle Outpost"]
-    end
-```
+| Landmark | Coordinates (Lat, Lon) | Description |
+|---|---|---|
+| **Albert Ekka Chowk** | `23.3699, 85.3253` | City center / Main Road hub (Firayalal) |
+| **Ranchi Railway Station** | `23.3512, 85.3347` | South Eastern Railway central terminus |
+| **Nucleus Mall** | `23.3725, 85.3315` | Major retail and transit node (Circular Road) |
+| **Morabadi Ground** | `23.3880, 85.3300` | Northern recreational & civic grounds |
+| **Main Road Overbridge** | `23.3565, 85.3285` | Central arterial flyover connecting North/South |
+| **Sujata Chowk** | `23.3590, 85.3270` | Southern commercial junction |
+| **St. Xavier's College** | `23.3640, 85.3260` | Historic educational campus on Purulia Road |
+| **Tagore Hill** | `23.3980, 85.3420` | Historic cultural peak in northern Ranchi |
+| **Ranchi University** | `23.3800, 85.3275` | Northern academic zone |
+| **Doranda Market** | `23.3380, 85.3250` | Southern commercial center |
 
 ---
 
-## 💻 Requirements & Installation
+## ⚙️ Installation & Virtual Environment
 
-- **Python Version**: Python 3.10+ (tested on Python 3.10, 3.11, 3.12, 3.13, and 3.14).
-- **Dependencies**: **Zero** (Standard Library only).
-- **Platform**: Cross-platform (Linux, macOS, Windows).
+Python 3.10+ is required.
 
-### Clone and Navigate
+### 1. Create and Activate Virtual Environment
 
 ```bash
-git clone https://github.com/harrypotter879/Maps.git
-cd Maps
+# In the project root directory
+python3 -m venv .venv
+
+# Activate on Linux / macOS:
+source .venv/bin/activate
+
+# Or activate on Windows:
+# .venv\Scripts\activate
 ```
 
-No `pip install` or virtual environment activation is needed.
+### 2. Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+*Installed dependencies: `osmnx` (v2.x) and `folium` (v0.20+).*
 
 ---
 
 ## 🚀 Usage Guide
 
-### 1. Direct Command-Line Mode
+### 1. Real-World Landmark Routing
 
-Find the shortest route between two locations directly using `-s` (`--start`) and `-d` (`--dest`):
+Find the shortest route between two landmarks in Ranchi:
 
 ```bash
-python main.py -s "Bayview" -d "Frostford"
+python main.py -s "Albert Ekka Chowk" -d "Ranchi Railway Station"
 ```
 
-**Sample Output:**
+**Terminal Output:**
 ```text
-──────────────────────────────────────────────────────────────
-🏁 Route Summary: Bayview  ➔  Frostford
-──────────────────────────────────────────────────────────────
+─────────────────────────────────────────────────────────────────
+🏁 Route Summary: Albert Ekka Chowk (Node 766708626)  ➔  Ranchi Railway Station (Node 3682074540)
+─────────────────────────────────────────────────────────────────
 
 🗺️  Turn-by-Turn Itinerary:
-   1. Bayview ➔ Silverfall
-      Leg Distance: 22 km via [Route 1 (Coast Highway)]
-   2. Silverfall ➔ Riverdale
-      Leg Distance: 28 km via [I-10 Expressway]
-   3. Riverdale ➔ Frostford
-      Leg Distance: 55 km via [Frost Gorge Parkway]
+   1. Follow [Firayalal Chowk Junction] for 16 m 
+   2. Follow [Mahatma Gandhi Road] for 377 m (3 intersections)
+   3. Follow [Chutia road] for 1.99 km (28 intersections)
+   4. Follow [Station Road] for 94 m 
+   5. Follow [Ranchi Club Road] for 220 m 
 
-🛣️  Full Path Sequence:
-   Bayview ➔ Silverfall ➔ Riverdale ➔ Frostford
+🛣️  Path Sequence (35 intersections):
+   766708626 ➔ 2910367381 ➔ 9105673211 ➔ ... [29 intermediate intersections] ➔ 965183707 ➔ 1805442879 ➔ 3682074540
 
 📊 Trip & Performance Metrics:
-   • Total Distance       : 105 km
-   • Number of Segments   : 3
-   • Nodes Explored       : 12
-   • Search Execution Time: 72.16 µs
-──────────────────────────────────────────────────────────────
+   • Total Distance       : 2.70 km
+   • Number of Segments   : 34
+   • Nodes Explored       : 2181
+   • Search Execution Time: 8.55 ms
+─────────────────────────────────────────────────────────────────
+
+🗺️  Interactive Map Saved Successfully:
+   📁 File: /home/tejas/Documents/Maps/Maps/route_map.html
+   🌐 Open this file in your browser to view the interactive map!
 ```
 
-### 2. Interactive Prompt Mode
+### 2. GPS Coordinate Routing
 
-Run `main.py` without arguments (or with `--interactive` / `-i`):
+Pass arbitrary GPS coordinates anywhere in the mapped area:
+
+```bash
+python main.py --start-coords 23.3699,85.3253 --dest-coords 23.3880,85.3300
+```
+
+### 3. Interactive Map Generation
+
+Every successful real-world routing automatically generates an interactive HTML map:
+- **Default path**: `route_map.html`
+- **Custom path**: Use the `-o` / `--output-map` flag:
+  ```bash
+  python main.py -s "Nucleus Mall" -d "Morabadi Ground" -o my_trip.html
+  ```
+
+Open the generated file in any browser (e.g. Chrome, Firefox, Safari) or run:
+```bash
+xdg-open route_map.html   # Linux
+open route_map.html       # macOS
+start route_map.html      # Windows
+```
+
+### 4. Interactive Prompt Mode
+
+Launch the guided interactive navigator:
 
 ```bash
 python main.py
 ```
 
-Features:
-- Prints available locations automatically.
-- Validates user input interactively.
-- Fuzzy resolves minor typos (e.g., typing `"pinecreest"` automatically resolves to `"Pinecrest"`).
-- Allows continuous queries without restarting the program.
+Prompts allow selecting between the **Real-World OpenStreetMap Network** and the **Fictional Regional Network**, selecting landmarks by index `[1-10]`, typing coordinates, and running multiple queries consecutively.
 
-### 3. Listing Available Locations
+### 5. Listing Landmarks & Fictional Towns
 
-Inspect all valid locations in the road network:
+- **List Ranchi Landmarks**:
+  ```bash
+  python main.py --list-landmarks
+  ```
+- **List Fictional Stage 1 Towns**:
+  ```bash
+  python main.py --list
+  ```
+
+### 6. Stage 1 Fictional Network Mode (Backward-Compatible)
+
+The fictional network from Stage 1 remains accessible:
 
 ```bash
-python main.py --list
+python main.py --fictional -s "Bayview" -d "Frostford"
 ```
+*(Fictional queries also execute automatically if the location names match Stage 1 towns).*
 
-### 4. Handling Unreachable Routes
+### 7. Refreshing Live OpenStreetMap Data
 
-If two locations exist in disconnected components (such as `Grand Haven` and `Storm Island`):
+To download fresh data directly from the Overpass API:
 
 ```bash
-python main.py -s "Grand Haven" -d "Storm Island"
-```
-
-**Output:**
-```text
-──────────────────────────────────────────────────────────────
-🏁 Route Summary: Grand Haven  ➔  Storm Island
-──────────────────────────────────────────────────────────────
-
-❌ NO ROUTE FOUND!
-   Destination 'Storm Island' is not reachable from 'Grand Haven'.
-   (These locations reside in separate, disconnected network regions.)
-
-⏱️  Search Execution Time : 94.83 µs
-🔍 Nodes Explored         : 14
-──────────────────────────────────────────────────────────────
+python main.py --refresh-osm
 ```
 
 ---
@@ -201,122 +225,71 @@ python main.py -s "Grand Haven" -d "Storm Island"
 ## 🧮 Algorithm Complexity & Analysis
 
 ### 1. Data Structure Design
-- **Graph Representation**: Weighted Adjacency List `Dict[str, List[Edge]]`.
-  - Lookup time for outgoing edges of vertex $u$: $O(1)$ average.
-  - Storage space: $O(V + E)$ where $V$ is vertices and $E$ is directed edges.
-- **Priority Queue**: Python's binary min-heap (`heapq`).
-  - `heappush`: $O(\log |Q|)$
-  - `heappop`: $O(\log |Q|)$
+- **Adjacency List Graph**: `Graph` stores nodes and outgoing `Edge` structures in memory:
+  - Average outgoing edge access: $\mathcal{O}(1)$
+  - Storage space: $\mathcal{O}(V + E)$
+- **Priority Queue**: Python's binary min-heap (`heapq`):
+  - Insertion (`heappush`): $\mathcal{O}(\log |Q|)$
+  - Extraction (`heappop`): $\mathcal{O}(\log |Q|)$
 
 ### 2. Time Complexity: $\mathcal{O}((V + E) \log V)$
 
-1. **Initialization**:
-   - Setting initial distances to $\infty$ takes $O(V)$ time.
-   - Pushing the source vertex $(0.0, \text{source})$ onto the min-heap takes $O(1)$ time.
+1. **Initialization**: Distance dictionary and priority queue setup take $\mathcal{O}(V)$ time.
+2. **Min-Heap Popping**: Settling each intersection at most once takes at most $\sum_{i=1}^{V} \mathcal{O}(\log V) = \mathcal{O}(V \log V)$.
+3. **Edge Relaxation**: Exploring each directed street segment relaxes distances via `heapq.heappush`: $\sum_{j=1}^{E} \mathcal{O}(\log V) = \mathcal{O}(E \log V)$.
+4. **Total Worst-Case Time**:
+   $$\mathcal{O}((V + E) \log V)$$
 
-2. **Vertex Extraction**:
-   - Each vertex is extracted from the min-heap at most once when its optimal distance is settled.
-   - For $V$ vertices, popping from the heap takes at most:
-     $$\sum_{i=1}^{V} O(\log V) = O(V \log V)$$
-
-3. **Edge Relaxation**:
-   - For every vertex settled, all its outgoing edges are scanned. In total over the whole algorithm, each directed edge is examined at most once.
-   - If a shorter distance is found, `heapq.heappush(pq, (new_dist, neighbor))` is called.
-   - For $E$ total edges, edge relaxations perform at most $E$ insertions into the heap of size at most $V$:
-     $$\sum_{j=1}^{E} O(\log V) = O(E \log V)$$
-
-4. **Total Time Complexity**:
-   $$\mathcal{O}(V) + \mathcal{O}(V \log V) + \mathcal{O}(E \log V) = \mathcal{O}((V + E) \log V)$$
-
-> **Early Termination Optimization**: In `find_shortest_path`, once `current_node == destination`, the search terminates immediately. For typical queries on planar road networks, the practical average time is significantly lower than the theoretical worst-case bound, frequently executing in tens of microseconds.
+> **Real-World Performance**: On the $2,493$-node Ranchi graph, Dijkstra's algorithm consistently finds the optimal route in **$5 \text{ to } 15 \text{ ms}$** on commodity hardware, utilizing early target termination.
 
 ### 3. Space Complexity: $\mathcal{O}(V + E)$
-- **Adjacency List**: $\mathcal{O}(V + E)$ to store all nodes and directed edges.
-- **Distances Dictionary**: $\mathcal{O}(V)$ to store optimal distances to each node.
-- **Predecessor Map**: $\mathcal{O}(V)$ to store predecessor links for path reconstruction.
-- **Priority Queue**: At most $\mathcal{O}(V)$ elements at any time.
-- **Settled Set**: At most $\mathcal{O}(V)$ elements.
-- **Total Auxiliary Memory**: $\mathcal{O}(V + E)$ space.
+- Adjacency list and coordinates: $\mathcal{O}(V + E)$
+- Predecessor map and distance map: $\mathcal{O}(V)$
+- Priority queue: $\mathcal{O}(V)$
+- **Total Memory Footprint**: $< 15 \text{ MB}$ in RAM.
 
 ---
 
 ## 🧪 Automated Testing
 
-The automated test suite in [`tests.py`](tests.py) provides 100% coverage across core logic:
-
-- **Graph Structure**: Node additions, duplicate prevention, empty name rejection, directed vs bidirectional edges, negative weight rejection, fuzzy name matching.
-- **Dijkstra Engine**:
-  - Triangle inequality (shorter multi-hop chosen over expensive direct edge).
-  - Source equals destination (distance 0).
-  - Unreachable destinations across disconnected components.
-  - Non-existent start / destination error raising (`KeyError`).
-  - Cyclic networks (handling cycles without infinite loops).
-  - Zero-weight edges (valid non-negative edges).
-  - Negative weight detection defense.
-  - Deterministic route verification across multiple road network pairs.
-  - Sum of leg distances matches total route distance.
-- **Display Formatting**: Microsecond, millisecond, and second precision; tabular layout.
-- **CLI & Integration**: Parameter parsing, exit status codes (`0` for success, `1` for invalid input, `2` for unreachable destination), and case-insensitive resolution.
-
-### Running Tests
-
-Execute the test suite with Python's standard `unittest`:
+The automated test suite in [`tests.py`](tests.py) comprises **40 tests** covering both Stage 1 and Stage 2:
 
 ```bash
 python -m unittest -v tests.py
 ```
 
-**Test Output:**
+### Coverage Summary
+
+- **Graph Primitives**: Adding nodes/edges, coordinate tracking, negative weight rejection, nearest-node calculation.
+- **Custom Dijkstra Algorithm**:
+  - Triangle inequality (optimal multi-hop vs direct).
+  - Source equals destination ($0 \text{ m}$).
+  - Disconnected component handling (`found=False`, distance $=\infty$).
+  - Negative edge weight detection defense.
+  - Cycle tolerance and zero-weight edge support.
+- **Stage 2 OpenStreetMap & Coordinates**:
+  - Coordinate parsing (`lat, lon`, parenthesized, negative, invalid input rejection).
+  - Serialized JSON network cache integrity ($> 2,000$ edges).
+  - Real-world nearest road node resolution.
+  - Landmark resolution and fuzzy fallback.
+- **Map Visualization**:
+  - HTML file generation with Folium.
+  - Marker insertion (Start/Destination).
+  - PolyLine geometry embedding and HUD card elements.
+- **CLI & Integration**:
+  - Exit code verification (`0` on success, `1` on invalid input, `2` on unreachable destination).
+  - Real-world landmark CLI execution.
+  - Coordinate flag CLI execution.
+  - Backward compatibility with Stage 1 commands.
+
 ```text
-test_resolve_case_insensitive (tests.TestCLIHelpers.test_resolve_case_insensitive) ... ok
-test_resolve_exact (tests.TestCLIHelpers.test_resolve_exact) ... ok
-test_resolve_fuzzy_single_match (tests.TestCLIHelpers.test_resolve_fuzzy_single_match) ... ok
-test_resolve_invalid (tests.TestCLIHelpers.test_resolve_invalid) ... ok
-test_cyclic_graph (tests.TestDijkstra.test_cyclic_graph) ... ok
-test_direct_vs_indirect_shorter_path (tests.TestDijkstra.test_direct_vs_indirect_shorter_path) ... ok
-test_legs_sum_to_total_distance (tests.TestDijkstra.test_legs_sum_to_total_distance) ... ok
-test_negative_weight_in_search_raises (tests.TestDijkstra.test_negative_weight_in_search_raises) ... ok
-test_nonexistent_locations_raise_key_error (tests.TestDijkstra.test_nonexistent_locations_raise_key_error) ... ok
-test_route_on_fictional_network (tests.TestDijkstra.test_route_on_fictional_network) ... ok
-test_same_start_and_destination (tests.TestDijkstra.test_same_start_and_destination) ... ok
-test_unreachable_destination (tests.TestDijkstra.test_unreachable_destination) ... ok
-test_zero_weight_edges (tests.TestDijkstra.test_zero_weight_edges) ... ok
-test_format_distance (tests.TestDisplay.test_format_distance) ... ok
-test_format_time (tests.TestDisplay.test_format_time) ... ok
-test_print_available_locations (tests.TestDisplay.test_print_available_locations) ... ok
-test_print_path_result_output (tests.TestDisplay.test_print_path_result_output) ... ok
-test_print_unreachable_path (tests.TestDisplay.test_print_unreachable_path) ... ok
-test_add_and_has_node (tests.TestGraph.test_add_and_has_node) ... ok
-test_add_bidirectional_edge (tests.TestGraph.test_add_bidirectional_edge) ... ok
-test_add_directed_edge (tests.TestGraph.test_add_directed_edge) ... ok
-test_empty_node_name_raises (tests.TestGraph.test_empty_node_name_raises) ... ok
-test_find_close_matches (tests.TestGraph.test_find_close_matches) ... ok
-test_get_edge (tests.TestGraph.test_get_edge) ... ok
-test_get_neighbors_nonexistent_node_raises (tests.TestGraph.test_get_neighbors_nonexistent_node_raises) ... ok
-test_negative_weight_edge_raises (tests.TestGraph.test_negative_weight_edge_raises) ... ok
-test_sample_network_integrity (tests.TestGraph.test_sample_network_integrity) ... ok
-test_cli_invalid_location (tests.TestMainCLIIntegration.test_cli_invalid_location) ... ok
-test_cli_list_flag (tests.TestMainCLIIntegration.test_cli_list_flag) ... ok
-test_cli_missing_destination (tests.TestMainCLIIntegration.test_cli_missing_destination) ... ok
-test_cli_route_found (tests.TestMainCLIIntegration.test_cli_route_found) ... ok
-test_cli_route_unreachable (tests.TestMainCLIIntegration.test_cli_route_unreachable) ... ok
-
-----------------------------------------------------------------------
-Ran 32 tests in 0.032s
-
+Ran 40 tests in 1.225s
 OK
 ```
 
 ---
 
-## 🔮 Future Extensibility Roadmap
+## 🔮 Future Roadmap
 
-The Stage 1 architecture was intentionally structured to accommodate subsequent stages without breaking changes:
-
-1. **A\* Search & Heuristic Routing**:
-   - The `Graph` node definitions can seamlessly support latitude/longitude coordinates `(lat, lon)`.
-   - The priority queue evaluation in `find_shortest_path` can be modified to $f(n) = g(n) + h(n)$ using the Haversine or Euclidean distance as the admissible heuristic $h(n)$.
-2. **OpenStreetMap (OSM) Ingestion**:
-   - `Graph.add_edge()` and `Graph.add_node()` can ingest real-world road networks from `.osm` (XML / PBF) or Overpass API GeoJSON directly into the adjacency list.
-3. **Dynamic Weighting & Turn Penalties**:
-   - Edge weights can be factored by speed limits, elevation gradients, turn restrictions, and dynamic traffic congestion multipliers.
+- **Stage 3 — Heuristic Pathfinding (A\*)**: Integrate the Haversine distance heuristic $h(n)$ to further accelerate long-distance routing.
+- **Stage 4 — Live Traffic & Elevation**: Factor slope/elevation gradients from DEM data and dynamic travel time penalties.

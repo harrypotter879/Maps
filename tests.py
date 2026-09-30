@@ -366,5 +366,181 @@ class TestMainCLIIntegration(unittest.TestCase):
             sys.argv = orig_argv
 
 
+class TestOSMLoader(unittest.TestCase):
+    """Tests for OpenStreetMap road network loader and location resolution (Stage 2)."""
+
+    def test_parse_coordinates(self) -> None:
+        from osm_loader import parse_coordinates
+        # Standard format
+        coords = parse_coordinates("23.3699, 85.3253")
+        self.assertIsNotNone(coords)
+        self.assertAlmostEqual(coords[0], 23.3699)
+        self.assertAlmostEqual(coords[1], 85.3253)
+
+        # Parenthesized format
+        coords_paren = parse_coordinates("(23.3699, 85.3253)")
+        self.assertEqual(coords, coords_paren)
+
+        # Negative coordinates
+        coords_neg = parse_coordinates("-33.8688, 151.2093")
+        self.assertIsNotNone(coords_neg)
+        self.assertAlmostEqual(coords_neg[0], -33.8688)
+
+        # Invalid formats
+        self.assertIsNone(parse_coordinates("Not a coordinate"))
+        self.assertIsNone(parse_coordinates("100.0, 85.0"))  # Latitude > 90
+
+    def test_load_cached_network_and_find_nearest(self) -> None:
+        from osm_loader import get_ranchi_road_network
+        graph = get_ranchi_road_network()
+        self.assertGreater(graph.node_count, 1000)
+        self.assertGreater(graph.edge_count, 2000)
+        self.assertTrue(graph.has_coords())
+
+        # Test finding nearest node to Albert Ekka Chowk (23.3699, 85.3253)
+        node_id, dist_m = graph.find_nearest_node(23.3699, 85.3253)
+        self.assertTrue(graph.has_node(node_id))
+        self.assertLess(dist_m, 100.0)  # Intersection is within 100 meters
+
+    def test_resolve_location_or_coords(self) -> None:
+        from osm_loader import get_ranchi_road_network, resolve_location_or_coords
+        graph = get_ranchi_road_network()
+
+        # Exact landmark name
+        node_id, coords, label = resolve_location_or_coords(graph, "Albert Ekka Chowk")
+        self.assertEqual(label, "Albert Ekka Chowk")
+        self.assertTrue(graph.has_node(node_id))
+
+        # Case-insensitive / partial landmark name
+        node_id2, coords2, label2 = resolve_location_or_coords(graph, "railway station")
+        self.assertEqual(label2, "Ranchi Railway Station")
+        self.assertTrue(graph.has_node(node_id2))
+
+        # Direct GPS coordinates
+        node_id3, coords3, label3 = resolve_location_or_coords(graph, "23.3699, 85.3253")
+        self.assertTrue(graph.has_node(node_id3))
+        self.assertIn("23.3699", label3)
+
+        # Invalid location raises ValueError
+        with self.assertRaises(ValueError):
+            resolve_location_or_coords(graph, "Unmapped Atlantis Outpost")
+
+
+class TestMapView(unittest.TestCase):
+    """Tests for interactive Folium HTML map generation (Stage 2)."""
+
+    def test_generate_interactive_map(self) -> None:
+        import os
+        from osm_loader import get_ranchi_road_network, resolve_location_or_coords
+        from dijkstra import find_shortest_path
+        from map_view import generate_interactive_map
+
+        graph = get_ranchi_road_network()
+        start_node, start_coords, start_name = resolve_location_or_coords(graph, "Albert Ekka Chowk")
+        dest_node, dest_coords, dest_name = resolve_location_or_coords(graph, "Ranchi Railway Station")
+
+        result = find_shortest_path(graph, start_node, dest_node)
+        self.assertTrue(result.found)
+
+        test_map_path = "test_map_artifact.html"
+        try:
+            output = generate_interactive_map(
+                graph=graph,
+                result=result,
+                start_coord=start_coords,
+                dest_coord=dest_coords,
+                start_label=start_name,
+                dest_label=dest_name,
+                output_path=test_map_path,
+            )
+            self.assertTrue(os.path.exists(output))
+            self.assertGreater(os.path.getsize(output), 1000)
+
+            with open(output, "r", encoding="utf-8") as f:
+                html_content = f.read()
+            self.assertIn("leaflet", html_content.lower())
+            self.assertIn("Albert Ekka Chowk", html_content)
+            self.assertIn("Ranchi Railway Station", html_content)
+        finally:
+            if os.path.exists(test_map_path):
+                os.remove(test_map_path)
+
+
+class TestStage2CLI(unittest.TestCase):
+    """Integration tests for Stage 2 CLI commands."""
+
+    def test_cli_list_landmarks(self) -> None:
+        import sys
+        from main import main
+        orig_argv = sys.argv
+        sys.argv = ["main.py", "--list-landmarks"]
+        try:
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                code = main()
+            self.assertEqual(code, 0)
+            self.assertIn("Albert Ekka Chowk", buffer.getvalue())
+            self.assertIn("Ranchi Railway Station", buffer.getvalue())
+        finally:
+            sys.argv = orig_argv
+
+    def test_cli_realworld_landmark_routing(self) -> None:
+        import sys, os
+        from main import main
+        orig_argv = sys.argv
+        test_out = "test_cli_route_map.html"
+        sys.argv = ["main.py", "-s", "Albert Ekka Chowk", "-d", "Ranchi Railway Station", "-o", test_out]
+        try:
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                code = main()
+            self.assertEqual(code, 0)
+            self.assertIn("Route Summary: Albert Ekka Chowk", buffer.getvalue())
+            self.assertIn("Ranchi Railway Station", buffer.getvalue())
+            self.assertIn("Interactive Map Saved Successfully", buffer.getvalue())
+            self.assertTrue(os.path.exists(test_out))
+        finally:
+            sys.argv = orig_argv
+            if os.path.exists(test_out):
+                os.remove(test_out)
+
+    def test_cli_coordinate_routing(self) -> None:
+        import sys, os
+        from main import main
+        orig_argv = sys.argv
+        test_out = "test_coord_map.html"
+        sys.argv = [
+            "main.py",
+            "--start-coords", "23.3699,85.3253",
+            "--dest-coords", "23.3512,85.3347",
+            "-o", test_out,
+        ]
+        try:
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                code = main()
+            self.assertEqual(code, 0)
+            self.assertIn("Interactive Map Saved Successfully", buffer.getvalue())
+            self.assertTrue(os.path.exists(test_out))
+        finally:
+            sys.argv = orig_argv
+            if os.path.exists(test_out):
+                os.remove(test_out)
+
+    def test_cli_invalid_landmark_error(self) -> None:
+        import sys
+        from main import main
+        orig_argv = sys.argv
+        sys.argv = ["main.py", "-s", "CompletelyBogusPlaceXYZ", "-d", "Ranchi Railway Station"]
+        try:
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                code = main()
+            self.assertEqual(code, 1)
+            self.assertIn("Unknown location 'CompletelyBogusPlaceXYZ'", buffer.getvalue())
+        finally:
+            sys.argv = orig_argv
+
+
 if __name__ == "__main__":
     unittest.main()

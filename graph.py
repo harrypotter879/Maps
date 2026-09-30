@@ -9,6 +9,7 @@ fictional road network.
 from __future__ import annotations
 from dataclasses import dataclass, field
 from difflib import get_close_matches
+import math
 from typing import Dict, List, Optional, Tuple, Set
 
 
@@ -18,6 +19,7 @@ class Edge:
     destination: str
     weight: float
     road_name: str = ""
+    geometry: Optional[Tuple[Tuple[float, float], ...]] = None
 
     def __post_init__(self) -> None:
         if self.weight < 0:
@@ -28,22 +30,32 @@ class Graph:
     """
     Weighted graph represented as an adjacency list.
     
-    Nodes are unique strings (e.g., city or junction names).
+    Nodes are unique strings (e.g., city names or OSM intersection IDs).
     Adjacency list maps each node to a list of outgoing Edge objects.
+    Optionally stores latitude/longitude coordinates and edge geometries.
     """
 
     def __init__(self) -> None:
         self._adjacency_list: Dict[str, List[Edge]] = {}
+        self._node_coords: Dict[str, Tuple[float, float]] = {}
 
-    def add_node(self, node: str) -> bool:
+    def add_node(
+        self,
+        node: str,
+        lat: Optional[float] = None,
+        lon: Optional[float] = None,
+    ) -> bool:
         """
         Add a node to the graph if it doesn't already exist.
+        Optionally records geographical coordinates (lat, lon).
         
         Returns True if the node was added, False if it already existed.
         """
         node = node.strip()
         if not node:
             raise ValueError("Node name cannot be empty.")
+        if lat is not None and lon is not None:
+            self._node_coords[node] = (float(lat), float(lon))
         if node not in self._adjacency_list:
             self._adjacency_list[node] = []
             return True
@@ -55,13 +67,15 @@ class Graph:
         v: str,
         weight: float,
         bidirectional: bool = True,
-        road_name: str = ""
+        road_name: str = "",
+        geometry: Optional[List[Tuple[float, float]]] = None,
     ) -> None:
         """
         Add a weighted edge between nodes u and v.
         
         If nodes u or v do not exist, they are automatically added.
         If bidirectional is True, adds edges in both directions.
+        Optionally stores geometry coordinates along the road curvature.
         """
         u = u.strip()
         v = v.strip()
@@ -73,22 +87,86 @@ class Graph:
         self.add_node(u)
         self.add_node(v)
 
+        geom_tuple = tuple(geometry) if geometry else None
+
         # Check if an edge already exists from u to v; update if new weight is smaller
-        self._add_or_update_edge(u, v, weight, road_name)
+        self._add_or_update_edge(u, v, weight, road_name, geom_tuple)
 
         if bidirectional and u != v:
-            self._add_or_update_edge(v, u, weight, road_name)
+            rev_geom = tuple(reversed(geometry)) if geometry else None
+            self._add_or_update_edge(v, u, weight, road_name, rev_geom)
 
-    def _add_or_update_edge(self, u: str, v: str, weight: float, road_name: str) -> None:
+    def _add_or_update_edge(
+        self,
+        u: str,
+        v: str,
+        weight: float,
+        road_name: str,
+        geometry: Optional[Tuple[Tuple[float, float], ...]] = None,
+    ) -> None:
         """Helper to add an edge or update it if a cheaper edge is added."""
         edges = self._adjacency_list[u]
         for idx, edge in enumerate(edges):
             if edge.destination == v:
                 # Update if the new edge is shorter or identical
                 if weight <= edge.weight:
-                    edges[idx] = Edge(destination=v, weight=weight, road_name=road_name)
+                    edges[idx] = Edge(
+                        destination=v,
+                        weight=weight,
+                        road_name=road_name,
+                        geometry=geometry,
+                    )
                 return
-        edges.append(Edge(destination=v, weight=weight, road_name=road_name))
+        edges.append(
+            Edge(
+                destination=v,
+                weight=weight,
+                road_name=road_name,
+                geometry=geometry,
+            )
+        )
+
+    def get_node_coords(self, node: str) -> Optional[Tuple[float, float]]:
+        """Return (lat, lon) coordinates of a node if available, else None."""
+        return self._node_coords.get(node.strip())
+
+    def has_coords(self) -> bool:
+        """Return True if node coordinates are present in the graph."""
+        return bool(self._node_coords)
+
+    def find_nearest_node(self, lat: float, lon: float) -> Tuple[str, float]:
+        """
+        Find the closest node in the graph to the specified (lat, lon).
+        Returns a tuple of (nearest_node_id, distance_in_meters).
+        Raises ValueError if the graph has no recorded coordinates.
+        """
+        if not self._node_coords:
+            raise ValueError("Cannot search nearest node: graph has no geographical coordinates.")
+
+        try:
+            import numpy as np
+            node_ids = list(self._node_coords.keys())
+            coords_arr = np.array([self._node_coords[n] for n in node_ids], dtype=np.float64)
+            lats = coords_arr[:, 0]
+            lons = coords_arr[:, 1]
+            cos_lat = math.cos(math.radians(lat))
+            dlat = (lats - lat) * 111320.0
+            dlon = (lons - lon) * (111320.0 * cos_lat)
+            dists_sq = dlat * dlat + dlon * dlon
+            best_idx = int(np.argmin(dists_sq))
+            return node_ids[best_idx], math.sqrt(float(dists_sq[best_idx]))
+        except ImportError:
+            best_node = ""
+            best_dist = float("inf")
+            cos_lat = math.cos(math.radians(lat))
+            for n, (nlat, nlon) in self._node_coords.items():
+                dlat = (nlat - lat) * 111320.0
+                dlon = (nlon - lon) * (111320.0 * cos_lat)
+                d_sq = dlat * dlat + dlon * dlon
+                if d_sq < best_dist:
+                    best_dist = d_sq
+                    best_node = n
+            return best_node, math.sqrt(best_dist)
 
     def has_node(self, node: str) -> bool:
         """Return True if the node exists in the graph."""
