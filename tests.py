@@ -542,5 +542,371 @@ class TestStage2CLI(unittest.TestCase):
             sys.argv = orig_argv
 
 
+class TestAStar(unittest.TestCase):
+    """Tests for the A* pathfinding algorithm implementation from scratch."""
+
+    def test_haversine_distance(self) -> None:
+        from astar import haversine_distance
+        # Same point
+        c = (23.3699, 85.3253)
+        self.assertAlmostEqual(haversine_distance(c, c), 0.0, places=3)
+
+        # Symmetry and accuracy
+        c2 = (23.3512, 85.3347)
+        d1 = haversine_distance(c, c2)
+        d2 = haversine_distance(c2, c)
+        self.assertAlmostEqual(d1, d2, places=3)
+        self.assertGreater(d1, 2000.0)
+        self.assertLess(d1, 2500.0)
+
+    def test_admissibility_and_consistency(self) -> None:
+        """Verify that straight-line Haversine heuristic never overestimates road lengths."""
+        from osm_loader import get_ranchi_road_network
+        from astar import haversine_distance
+
+        graph = get_ranchi_road_network()
+        sampled = 0
+        for u in graph.get_nodes()[:50]:
+            u_coord = graph.get_node_coords(u)
+            if not u_coord:
+                continue
+            for edge in graph.get_neighbors(u):
+                v_coord = graph.get_node_coords(edge.destination)
+                if not v_coord:
+                    continue
+                h_dist = haversine_distance(u_coord, v_coord)
+                # Straight-line distance must be <= road weight (with float precision tolerance)
+                self.assertLessEqual(h_dist, edge.weight + 0.5)
+                sampled += 1
+        self.assertGreater(sampled, 20)
+
+    def test_astar_on_fictional_network(self) -> None:
+        """A* without coordinates degrades gracefully to optimal Dijkstra."""
+        from astar import find_shortest_path_astar
+        from dijkstra import find_shortest_path
+
+        graph = create_sample_road_network()
+        d_res = find_shortest_path(graph, "Bayview", "Frostford")
+        a_res = find_shortest_path_astar(graph, "Bayview", "Frostford")
+
+        self.assertTrue(a_res.found)
+        self.assertEqual(a_res.algorithm, "A*")
+        self.assertAlmostEqual(a_res.total_distance, d_res.total_distance, places=3)
+        self.assertEqual(a_res.path, d_res.path)
+
+    def test_astar_direct_vs_indirect_shorter_path(self) -> None:
+        from astar import find_shortest_path_astar
+        g = Graph()
+        g.add_node("A", lat=0.0, lon=0.0)
+        g.add_node("B", lat=0.0, lon=0.0001)
+        g.add_node("C", lat=0.0, lon=0.0002)
+
+        g.add_edge("A", "C", 100.0, bidirectional=False)
+        g.add_edge("A", "B", 10.0, bidirectional=False)
+        g.add_edge("B", "C", 15.0, bidirectional=False)
+
+        res = find_shortest_path_astar(g, "A", "C")
+        self.assertTrue(res.found)
+        self.assertEqual(res.path, ["A", "B", "C"])
+        self.assertEqual(res.total_distance, 25.0)
+
+    def test_astar_same_start_and_dest(self) -> None:
+        from astar import find_shortest_path_astar
+        g = Graph()
+        g.add_node("Home", lat=23.0, lon=85.0)
+        res = find_shortest_path_astar(g, "Home", "Home")
+        self.assertTrue(res.found)
+        self.assertEqual(res.total_distance, 0.0)
+        self.assertEqual(res.path, ["Home"])
+
+    def test_astar_unreachable_destination(self) -> None:
+        from astar import find_shortest_path_astar
+        g = Graph()
+        g.add_edge("Island1", "Island2", 10.0)
+        g.add_edge("Main1", "Main2", 20.0)
+        res = find_shortest_path_astar(g, "Island1", "Main2")
+        self.assertFalse(res.found)
+        self.assertEqual(res.total_distance, float("inf"))
+
+    def test_astar_key_error(self) -> None:
+        from astar import find_shortest_path_astar
+        g = Graph()
+        g.add_node("Real")
+        with self.assertRaises(KeyError):
+            find_shortest_path_astar(g, "Fake", "Real")
+
+    def test_astar_negative_weight_raises(self) -> None:
+        from astar import find_shortest_path_astar
+        g = Graph()
+        g.add_node("A")
+        g.add_node("B")
+        corrupt_edge = object.__new__(Edge)
+        object.__setattr__(corrupt_edge, "destination", "B")
+        object.__setattr__(corrupt_edge, "weight", -10.0)
+        object.__setattr__(corrupt_edge, "road_name", "Invalid")
+        object.__setattr__(corrupt_edge, "geometry", None)
+        g._adjacency_list["A"].append(corrupt_edge)
+        with self.assertRaises(ValueError):
+            find_shortest_path_astar(g, "A", "B")
+
+    def test_astar_parity_with_dijkstra_on_real_world(self) -> None:
+        """Verify identical distance and reduced node exploration on real-world networks."""
+        from osm_loader import get_ranchi_road_network, resolve_location_or_coords
+        from dijkstra import find_shortest_path
+        from astar import find_shortest_path_astar
+
+        graph = get_ranchi_road_network()
+        pairs = [
+            ("Albert Ekka Chowk", "Ranchi Railway Station"),
+            ("Albert Ekka Chowk", "Morabadi Ground"),
+            ("Sujata Chowk", "Tagore Hill"),
+        ]
+
+        for start_name, dest_name in pairs:
+            u, _, _ = resolve_location_or_coords(graph, start_name)
+            v, _, _ = resolve_location_or_coords(graph, dest_name)
+
+            d_res = find_shortest_path(graph, u, v)
+            a_res = find_shortest_path_astar(graph, u, v)
+
+            self.assertTrue(d_res.found)
+            self.assertTrue(a_res.found)
+            # Shortest distances must match within 0.1 meter
+            self.assertAlmostEqual(d_res.total_distance, a_res.total_distance, places=1)
+            # A* must explore fewer or equal nodes
+            self.assertLessEqual(a_res.visited_nodes_count, d_res.visited_nodes_count)
+
+
+class TestAlgorithmComparison(unittest.TestCase):
+    """Tests for algorithm comparison table rendering and comparison map generation."""
+
+    def test_print_algorithm_comparison_output(self) -> None:
+        from osm_loader import get_ranchi_road_network, resolve_location_or_coords
+        from dijkstra import find_shortest_path
+        from astar import find_shortest_path_astar
+        from display import print_algorithm_comparison
+
+        graph = get_ranchi_road_network()
+        u, _, u_name = resolve_location_or_coords(graph, "Albert Ekka Chowk")
+        v, _, v_name = resolve_location_or_coords(graph, "Ranchi Railway Station")
+
+        d_res = find_shortest_path(graph, u, v)
+        a_res = find_shortest_path_astar(graph, u, v)
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print_algorithm_comparison(d_res, a_res, unit="m", start_label=u_name, dest_label=v_name)
+        output = buf.getvalue()
+
+        self.assertIn("ALGORITHM COMPARISON BENCHMARK", output)
+        self.assertIn("Dijkstra", output)
+        self.assertIn("A* (A-Star)", output)
+        self.assertIn("Nodes Explored", output)
+        self.assertIn("Execution Time", output)
+        self.assertIn("Exact Match", output)
+
+    def test_comparison_map_generation(self) -> None:
+        import os
+        from osm_loader import get_ranchi_road_network, resolve_location_or_coords
+        from dijkstra import find_shortest_path
+        from astar import find_shortest_path_astar
+        from map_view import generate_interactive_map
+
+        graph = get_ranchi_road_network()
+        u, u_coords, u_name = resolve_location_or_coords(graph, "Albert Ekka Chowk")
+        v, v_coords, v_name = resolve_location_or_coords(graph, "Ranchi Railway Station")
+
+        d_res = find_shortest_path(graph, u, v)
+        a_res = find_shortest_path_astar(graph, u, v)
+
+        test_out = "test_comparison_map.html"
+        try:
+            out_path = generate_interactive_map(
+                graph=graph,
+                result=a_res,
+                start_coord=u_coords,
+                dest_coord=v_coords,
+                start_label=u_name,
+                dest_label=v_name,
+                output_path=test_out,
+                comparison_result=d_res,
+            )
+            self.assertTrue(os.path.exists(out_path))
+            with open(out_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            self.assertIn("Algorithm Comparison", content)
+            self.assertIn("Dijkstra", content)
+            self.assertIn("A*", content)
+        finally:
+            if os.path.exists(test_out):
+                os.remove(test_out)
+
+
+class TestStage3CLI(unittest.TestCase):
+    """Integration tests for Stage 3 CLI algorithm selection and comparison commands."""
+
+    def test_cli_algorithm_astar(self) -> None:
+        import sys, os
+        from main import main
+        orig_argv = sys.argv
+        test_out = "test_astar_map.html"
+        sys.argv = [
+            "main.py",
+            "-s", "Albert Ekka Chowk",
+            "-d", "Ranchi Railway Station",
+            "-a", "astar",
+            "-o", test_out,
+        ]
+        try:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = main()
+            self.assertEqual(code, 0)
+            self.assertIn("Algorithm            : A*", buf.getvalue())
+            self.assertTrue(os.path.exists(test_out))
+        finally:
+            sys.argv = orig_argv
+            if os.path.exists(test_out):
+                os.remove(test_out)
+
+    def test_cli_algorithm_dijkstra(self) -> None:
+        import sys, os
+        from main import main
+        orig_argv = sys.argv
+        test_out = "test_dijkstra_map.html"
+        sys.argv = [
+            "main.py",
+            "-s", "Albert Ekka Chowk",
+            "-d", "Ranchi Railway Station",
+            "-a", "dijkstra",
+            "-o", test_out,
+        ]
+        try:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = main()
+            self.assertEqual(code, 0)
+            self.assertIn("Algorithm            : Dijkstra", buf.getvalue())
+            self.assertTrue(os.path.exists(test_out))
+        finally:
+            sys.argv = orig_argv
+            if os.path.exists(test_out):
+                os.remove(test_out)
+
+    def test_cli_compare_flag(self) -> None:
+        import sys, os
+        from main import main
+        orig_argv = sys.argv
+        test_out = "test_compare_map.html"
+        sys.argv = [
+            "main.py",
+            "-s", "Albert Ekka Chowk",
+            "-d", "Ranchi Railway Station",
+            "--compare",
+            "-o", test_out,
+        ]
+        try:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = main()
+            self.assertEqual(code, 0)
+            self.assertIn("ALGORITHM COMPARISON BENCHMARK", buf.getvalue())
+            self.assertIn("Dijkstra", buf.getvalue())
+            self.assertIn("A* (A-Star)", buf.getvalue())
+            self.assertTrue(os.path.exists(test_out))
+        finally:
+            sys.argv = orig_argv
+            if os.path.exists(test_out):
+                os.remove(test_out)
+
+
+class TestGeocoder(unittest.TestCase):
+    """Tests for Geocoding and reverse geocoding with local landmark fallback (Stage 4)."""
+
+    def test_search_local_landmarks(self) -> None:
+        from geocoder import search_local_landmarks
+        res = search_local_landmarks("Albert Ekka")
+        self.assertGreaterEqual(len(res), 1)
+        self.assertEqual(res[0].name, "Albert Ekka Chowk")
+        self.assertAlmostEqual(res[0].lat, 23.3699, places=3)
+        self.assertAlmostEqual(res[0].lon, 85.3253, places=3)
+
+    def test_search_direct_coordinates(self) -> None:
+        from geocoder import search_locations
+        res = search_locations("23.3699, 85.3253")
+        self.assertEqual(len(res), 1)
+        self.assertEqual(res[0].source, "coordinate")
+        self.assertAlmostEqual(res[0].lat, 23.3699, places=4)
+        self.assertAlmostEqual(res[0].lon, 85.3253, places=4)
+
+    def test_search_empty_query(self) -> None:
+        from geocoder import search_locations
+        self.assertEqual(search_locations(""), [])
+        self.assertEqual(search_locations("   "), [])
+
+    def test_reverse_geocode_landmark_proximity(self) -> None:
+        from geocoder import reverse_geocode
+        # Exact Albert Ekka Chowk coordinate
+        label = reverse_geocode(23.3699, 85.3253)
+        self.assertEqual(label, "Albert Ekka Chowk")
+
+        # Reverse geocoding any valid coordinate returns a non-empty string label
+        label_out = reverse_geocode(10.1234, 20.5678)
+        self.assertIsInstance(label_out, str)
+        self.assertGreater(len(label_out), 0)
+
+    def test_search_caching(self) -> None:
+        from geocoder import search_locations
+        # First query
+        r1 = search_locations("Nucleus Mall")
+        # Second query should retrieve from in-memory cache
+        r2 = search_locations("Nucleus Mall")
+        self.assertEqual(r1, r2)
+
+
+class TestStage4UI(unittest.TestCase):
+    """Tests for Stage 4 Streamlit UI helpers and map builders."""
+
+    def test_build_empty_map(self) -> None:
+        from map_view import build_empty_map
+        m = build_empty_map(
+            center=(23.3699, 85.3253),
+            zoom=14,
+            start_point=(23.3699, 85.3253, "Albert Ekka"),
+            dest_point=(23.3512, 85.3347, "Railway Station"),
+        )
+        self.assertIsNotNone(m)
+        html_str = m._repr_html_()
+        self.assertIn("leaflet", html_str.lower())
+        self.assertIn("Albert Ekka", html_str)
+        self.assertIn("Railway Station", html_str)
+
+    def test_build_folium_map_returns_instance(self) -> None:
+        from osm_loader import get_ranchi_road_network, resolve_location_or_coords
+        from astar import find_shortest_path_astar
+        from map_view import build_folium_map
+
+        graph = get_ranchi_road_network()
+        u, u_coords, u_name = resolve_location_or_coords(graph, "Albert Ekka Chowk")
+        v, v_coords, v_name = resolve_location_or_coords(graph, "Ranchi Railway Station")
+
+        res = find_shortest_path_astar(graph, u, v)
+        self.assertTrue(res.found)
+
+        m = build_folium_map(
+            graph=graph,
+            result=res,
+            start_coord=u_coords,
+            dest_coord=v_coords,
+            start_label=u_name,
+            dest_label=v_name,
+        )
+        self.assertIsNotNone(m)
+        html_str = m._repr_html_()
+        self.assertIn("Albert Ekka Chowk", html_str)
+        self.assertIn("Ranchi Railway Station", html_str)
+        self.assertIn("PathFinder Route Navigator", html_str)
+
+
 if __name__ == "__main__":
     unittest.main()

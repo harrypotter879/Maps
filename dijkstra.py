@@ -35,6 +35,7 @@ class PathResult:
     execution_time_sec: float
     visited_nodes_count: int
     found: bool
+    algorithm: str = "Dijkstra"
 
 
 def find_shortest_path(graph: Graph, source: str, destination: str) -> PathResult:

@@ -1,10 +1,12 @@
 """
-Main CLI entry point for PathFinder (Stage 1 & Stage 2).
+Main CLI entry point for PathFinder (Stage 1, Stage 2 & Stage 3).
 
 Provides:
-- Real-World OpenStreetMap routing (Ranchi, India) with Folium interactive maps.
-- Fictional road network routing (Stage 1 backward-compatible).
-- Direct command-line arguments and guided interactive prompt sessions.
+- Shortest-path routing using Dijkstra's algorithm and A* (A-Star) search from scratch.
+- Side-by-side performance benchmarking comparing Dijkstra vs A*.
+- Real-World OpenStreetMap routing (Ranchi, India) with Folium interactive web maps.
+- Backward-compatible Stage 1 fictional regional network routing.
+- Direct command-line interface and interactive guided prompt sessions.
 """
 
 from __future__ import annotations
@@ -14,11 +16,13 @@ from typing import Optional, Tuple
 
 from graph import Graph, create_sample_road_network
 from dijkstra import find_shortest_path, PathResult
+from astar import find_shortest_path_astar
 from display import (
     print_banner,
     print_available_locations,
     print_landmarks,
     print_path_result,
+    print_algorithm_comparison,
     print_map_saved,
     print_error,
 )
@@ -63,9 +67,13 @@ def run_realworld_routing(
     graph: Graph,
     start_query: str,
     dest_query: str,
+    algorithm: str = "astar",
     output_map: str = "route_map.html",
 ) -> int:
-    """Execute real-world shortest-path finding on OpenStreetMap data."""
+    """
+    Execute real-world shortest-path finding on OpenStreetMap data.
+    Supports Dijkstra, A*, or side-by-side comparison mode.
+    """
     try:
         start_query = parse_landmark_selection(start_query)
         dest_query = parse_landmark_selection(dest_query)
@@ -81,10 +89,47 @@ def run_realworld_routing(
         print_error(str(e))
         return 1
 
-    # Run Dijkstra's algorithm from scratch
-    result = find_shortest_path(graph, start_node, dest_node)
+    algo_norm = algorithm.lower().strip()
 
-    # Print terminal output
+    if algo_norm in ("compare", "both", "benchmark"):
+        # Run both algorithms on identical network and coordinates
+        dijkstra_res = find_shortest_path(graph, start_node, dest_node)
+        astar_res = find_shortest_path_astar(graph, start_node, dest_node)
+
+        # Print side-by-side comparison benchmark
+        print_algorithm_comparison(
+            dijkstra_res=dijkstra_res,
+            astar_res=astar_res,
+            unit="m",
+            start_label=start_label,
+            dest_label=dest_label,
+        )
+
+        if astar_res.found or dijkstra_res.found:
+            try:
+                map_path = generate_interactive_map(
+                    graph=graph,
+                    result=astar_res,
+                    start_coord=start_coords,
+                    dest_coord=dest_coords,
+                    start_label=start_label,
+                    dest_label=dest_label,
+                    output_path=output_map,
+                    comparison_result=dijkstra_res,
+                )
+                print_map_saved(map_path)
+            except Exception as err:
+                print_error(f"Failed to generate interactive map: {err}")
+
+        return 0 if (astar_res.found or dijkstra_res.found or start_node == dest_node) else 2
+
+    elif algo_norm in ("dijkstra", "d"):
+        result = find_shortest_path(graph, start_node, dest_node)
+    else:
+        # Default to A* search
+        result = find_shortest_path_astar(graph, start_node, dest_node)
+
+    # Print terminal output for single algorithm run
     print_path_result(
         result=result,
         unit="m",
@@ -114,6 +159,7 @@ def run_fictional_routing(
     graph: Graph,
     start_query: str,
     dest_query: str,
+    algorithm: str = "dijkstra",
 ) -> int:
     """Execute shortest-path finding on the fictional road network (Stage 1)."""
     resolved_start = resolve_fictional_location(graph, start_query)
@@ -128,21 +174,49 @@ def run_fictional_routing(
         print_error(f"Invalid destination location: '{dest_query}'.", suggestions)
         return 1
 
-    result = find_shortest_path(graph, resolved_start, resolved_dest)
-    print_path_result(result, unit="km")
+    algo_norm = algorithm.lower().strip()
+    if algo_norm in ("compare", "both", "benchmark"):
+        dijkstra_res = find_shortest_path(graph, resolved_start, resolved_dest)
+        astar_res = find_shortest_path_astar(graph, resolved_start, resolved_dest)
+        print_algorithm_comparison(
+            dijkstra_res=dijkstra_res,
+            astar_res=astar_res,
+            unit="km",
+            start_label=resolved_start,
+            dest_label=resolved_dest,
+        )
+        return 0 if dijkstra_res.found or resolved_start == resolved_dest else 2
+    elif algo_norm in ("astar", "a*"):
+        result = find_shortest_path_astar(graph, resolved_start, resolved_dest)
+    else:
+        result = find_shortest_path(graph, resolved_start, resolved_dest)
 
+    print_path_result(result, unit="km")
     return 0 if result.found or resolved_start == resolved_dest else 2
 
 
 def run_interactive_session() -> None:
-    """Run interactive mode allowing user to pick network and route."""
-    print_banner(stage=2)
+    """Run interactive mode allowing user to pick network, algorithm, and route."""
+    print_banner(stage=3)
     print("Select Road Network:")
     print("  [1] Real-World Map (Ranchi, Jharkhand, India) — OpenStreetMap [Default]")
     print("  [2] Fictional Regional Network (Stage 1)")
     
     choice = input("\nEnter choice (1 or 2, default=1): ").strip()
     is_fictional = choice == "2"
+
+    print("\nSelect Pathfinding Algorithm:")
+    print("  [1] A* Algorithm (Heuristic-guided, fastest) [Default]")
+    print("  [2] Dijkstra's Algorithm (Exhaustive search)")
+    print("  [3] Compare Both (Dijkstra vs A* side-by-side)")
+
+    algo_choice = input("\nEnter algorithm choice (1, 2, or 3, default=1): ").strip()
+    if algo_choice == "2":
+        selected_algo = "dijkstra"
+    elif algo_choice == "3":
+        selected_algo = "compare"
+    else:
+        selected_algo = "astar"
 
     if is_fictional:
         graph = create_sample_road_network()
@@ -165,7 +239,7 @@ def run_interactive_session() -> None:
                 if not dest_input:
                     continue
 
-                run_fictional_routing(graph, start_input, dest_input)
+                run_fictional_routing(graph, start_input, dest_input, algorithm=selected_algo)
 
                 another = input("Find another route? (Y/n): ").strip().lower()
                 if another in ("n", "no", "q", "quit"):
@@ -198,7 +272,13 @@ def run_interactive_session() -> None:
                 if not dest_input:
                     continue
 
-                run_realworld_routing(graph, start_input, dest_input, output_map="route_map.html")
+                run_realworld_routing(
+                    graph=graph,
+                    start_query=start_input,
+                    dest_query=dest_input,
+                    algorithm=selected_algo,
+                    output_map="route_map.html",
+                )
 
                 another = input("Find another route? (Y/n): ").strip().lower()
                 if another in ("n", "no", "q", "quit"):
@@ -214,15 +294,22 @@ def main() -> int:
     """Parse command-line arguments and run the application."""
     parser = argparse.ArgumentParser(
         prog="pathfinder",
-        description="PathFinder: Dijkstra-powered shortest path calculator for road networks.",
+        description="PathFinder: Shortest path routing & algorithm comparison (Dijkstra vs A*).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Real-World OpenStreetMap routing (Ranchi):
-  python main.py -s "Albert Ekka Chowk" -d "Ranchi Railway Station"
-  python main.py --start-coords 23.3699,85.3253 --dest-coords 23.3512,85.3347
-  python main.py --list-landmarks
+  # Compare Dijkstra and A* side-by-side on real-world map:
+  python main.py -s "Albert Ekka Chowk" -d "Ranchi Railway Station" --compare
   
+  # Calculate route using A* (default):
+  python main.py -s "Albert Ekka Chowk" -d "Ranchi Railway Station" -a astar
+
+  # Calculate route using Dijkstra:
+  python main.py -s "Albert Ekka Chowk" -d "Ranchi Railway Station" -a dijkstra
+
+  # Route with GPS coordinates:
+  python main.py --start-coords 23.3699,85.3253 --dest-coords 23.3512,85.3347 --compare
+
   # Stage 1 Fictional Network routing:
   python main.py --fictional -s "Bayview" -d "Frostford"
   python main.py --list
@@ -252,6 +339,19 @@ Examples:
         "--dest-coords",
         type=str,
         help="Destination GPS coordinates as 'latitude,longitude'",
+    )
+    parser.add_argument(
+        "-a", "--algo", "--algorithm",
+        dest="algorithm",
+        type=str,
+        choices=["astar", "dijkstra", "compare"],
+        default=None,
+        help="Pathfinding algorithm to execute ('astar', 'dijkstra', or 'compare')",
+    )
+    parser.add_argument(
+        "-c", "--compare",
+        action="store_true",
+        help="Benchmark both Dijkstra and A* side-by-side",
     )
     parser.add_argument(
         "-o", "--output-map",
@@ -306,6 +406,15 @@ Examples:
         print("Fresh OpenStreetMap network downloaded and cached successfully.")
         return 0
 
+    # Determine algorithm
+    if args.compare:
+        algorithm = "compare"
+    elif args.algorithm:
+        algorithm = args.algorithm.lower()
+    else:
+        # Default algorithm: astar for fastest single routing, or compare when requested
+        algorithm = "astar"
+
     # Determine start and destination from args
     start_arg = args.start or args.start_coords
     dest_arg = args.destination or args.dest_coords
@@ -328,13 +437,19 @@ Examples:
     )
 
     if is_fictional_query:
-        return run_fictional_routing(fictional_graph, start_arg, dest_arg)
+        return run_fictional_routing(
+            graph=fictional_graph,
+            start_query=start_arg,
+            dest_query=dest_arg,
+            algorithm=algorithm,
+        )
     else:
         osm_graph = get_ranchi_road_network()
         return run_realworld_routing(
             graph=osm_graph,
             start_query=start_arg,
             dest_query=dest_arg,
+            algorithm=algorithm,
             output_map=args.output_map,
         )
 

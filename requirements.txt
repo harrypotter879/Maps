@@ -1,3 +1,6 @@
-# PathFinder Stage 2 Dependencies
+# PathFinder Dependencies (Stage 1, Stage 2, Stage 3 & Stage 4)
+# Core algorithms (Dijkstra, A*) are implemented from scratch with zero dependencies.
 osmnx>=2.0.0
 folium>=0.17.0
+streamlit>=1.40.0
+streamlit-folium>=0.23.0
