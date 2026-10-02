@@ -907,6 +907,125 @@ class TestStage4UI(unittest.TestCase):
         self.assertIn("Ranchi Railway Station", html_str)
         self.assertIn("PathFinder Route Navigator", html_str)
 
+    def test_map_with_searched_location(self) -> None:
+        """Verify that searched location appears with dedicated search pin and popup."""
+        from map_view import build_empty_map, build_folium_map
+        from osm_loader import get_ranchi_road_network, resolve_location_or_coords
+        from astar import find_shortest_path_astar
+
+        searched = (23.3725, 85.3315, "Nucleus Mall")
+        empty_map = build_empty_map(searched_point=searched)
+        empty_html = empty_map._repr_html_()
+        self.assertIn("Nucleus Mall", empty_html)
+        self.assertIn("Searched Place", empty_html)
+
+        graph = get_ranchi_road_network()
+        u, u_coords, u_name = resolve_location_or_coords(graph, "Albert Ekka Chowk")
+        v, v_coords, v_name = resolve_location_or_coords(graph, "Ranchi Railway Station")
+        res = find_shortest_path_astar(graph, u, v)
+
+        route_map = build_folium_map(
+            graph=graph,
+            result=res,
+            start_coord=u_coords,
+            dest_coord=v_coords,
+            start_label=u_name,
+            dest_label=v_name,
+            searched_point=searched,
+        )
+        route_html = route_map._repr_html_()
+        self.assertIn("Nucleus Mall", route_html)
+        self.assertIn("Searched Place", route_html)
+
+    def test_estimate_travel_time(self) -> None:
+        """Verify travel time estimation calculation."""
+        from app import estimate_travel_time
+        # 3000 meters at 30 km/h is 6 minutes
+        t_drive = estimate_travel_time(3000.0, speed_kmh=30.0)
+        self.assertIn("6 min", t_drive)
+
+        # 3000 meters at 4.5 km/h is 40 minutes
+        t_walk = estimate_travel_time(3000.0, speed_kmh=4.5)
+        self.assertIn("40 min", t_walk)
+
+        # 0 meters
+        self.assertEqual(estimate_travel_time(0.0), "0 mins")
+
+    def test_map_search_widget_embedded(self) -> None:
+        """Verify that interactive client-side search widget is injected into Folium maps."""
+        from map_view import build_empty_map
+        m = build_empty_map()
+        html_str = m._repr_html_()
+        self.assertIn("pf-search-widget", html_str)
+        self.assertIn("pf-search-input", html_str)
+        self.assertIn("Search location or landmark", html_str)
+
+    def test_standard_nav_hud_no_algorithm_stats(self) -> None:
+        """Verify that standard navigation map HUD focuses on trip ETA and omits CPU stats."""
+        from osm_loader import get_ranchi_road_network, resolve_location_or_coords
+        from astar import find_shortest_path_astar
+        from map_view import build_folium_map
+
+        graph = get_ranchi_road_network()
+        u, u_coords, u_name = resolve_location_or_coords(graph, "Albert Ekka Chowk")
+        v, v_coords, v_name = resolve_location_or_coords(graph, "Ranchi Railway Station")
+        res = find_shortest_path_astar(graph, u, v)
+
+        m = build_folium_map(
+            graph=graph,
+            result=res,
+            start_coord=u_coords,
+            dest_coord=v_coords,
+            start_label=u_name,
+            dest_label=v_name,
+        )
+        html_str = m._repr_html_()
+        self.assertIn("Drive Time", html_str)
+        self.assertIn("Walk Time", html_str)
+        # Verify no CPU millisecond benchmark or visited node counts in the standard HUD
+        self.assertNotIn("ms</td>", html_str)
+        self.assertNotIn("Nodes Explored", html_str)
+
+    def test_clean_startup_empty_map_no_default_flags(self) -> None:
+        """Verify that starting map with no points has zero flag markers or directions."""
+        from map_view import build_empty_map
+        m = build_empty_map(center=(23.3699, 85.3253), zoom=14, start_point=None, dest_point=None)
+        html_str = m._repr_html_()
+        self.assertNotIn("Start:</b>", html_str)
+        self.assertNotIn("Destination:</b>", html_str)
+
+    def test_show_hud_false_suppresses_hud(self) -> None:
+        """Verify that show_hud=False hides the intrusive top-right HUD card."""
+        from osm_loader import get_ranchi_road_network, resolve_location_or_coords
+        from astar import find_shortest_path_astar
+        from map_view import build_folium_map
+
+        graph = get_ranchi_road_network()
+        u, u_coords, u_name = resolve_location_or_coords(graph, "Albert Ekka Chowk")
+        v, v_coords, v_name = resolve_location_or_coords(graph, "Ranchi Railway Station")
+        res = find_shortest_path_astar(graph, u, v)
+
+        m = build_folium_map(
+            graph=graph,
+            result=res,
+            start_coord=u_coords,
+            dest_coord=v_coords,
+            start_label=u_name,
+            dest_label=v_name,
+            show_hud=False,
+        )
+        html_str = m._repr_html_()
+        self.assertNotIn("PathFinder Route Navigator", html_str)
+
+    def test_init_session_state_clean_route(self) -> None:
+        """Verify session state initializes with no route and collapsed menu."""
+        import inspect
+        from app import init_session_state
+        src = inspect.getsource(init_session_state)
+        self.assertIn("st.session_state.route_result = None", src)
+        self.assertIn("st.session_state.show_route_menu = False", src)
+
 
 if __name__ == "__main__":
     unittest.main()
+

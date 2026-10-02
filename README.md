@@ -1,14 +1,14 @@
-# 🌐 PathFinder (Stage 4: Interactive Navigation UI)
+# 🌐 PathFinder (Interactive Navigation & Map Search)
 
-A modern, full-featured shortest-pathfinding engine and web navigation application in Python. Features custom implementations of **Dijkstra's algorithm** and **A\* search** from scratch, integrated with real-world OpenStreetMap (OSM) road networks, live **Nominatim** geocoding, an interactive **Streamlit + Folium** web interface, and empirical side-by-side algorithm benchmarking.
+A modern, full-featured shortest-pathfinding engine and web navigation application in Python. Features custom implementations of **A\* search** and **Dijkstra's algorithm** from scratch, integrated with real-world OpenStreetMap (OSM) road networks, live **Nominatim** geocoding, an interactive **Streamlit + Folium** web interface with a **real-time location search bar**, autocomplete suggestions, and live map pinning.
 
-Both pathfinding algorithms are built from first principles using Python's standard library `heapq` with zero reliance on third-party routing libraries (no NetworkX shortest-path or OSMnx routing routines). Stage 4 delivers a responsive web navigation interface allowing users to search places or addresses, click directly on the map, swap endpoints, and compare routing algorithms in real time.
+Both pathfinding algorithms are built from first principles using Python's standard library `heapq` with zero reliance on third-party routing libraries (no NetworkX shortest-path or OSMnx routing routines). The web navigation interface allows users to search any place or address with instant suggestions, view search pins on the map, click directly on roads, swap endpoints, and view realistic driving and walking travel times.
 
 ---
 
 ## 📋 Table of Contents
 - [✨ Features](#-features)
-- [🖥️ Interactive Web UI (Stage 4)](#️-interactive-web-ui-stage-4)
+- [🖥️ Interactive Web UI & Location Search](#️-interactive-web-ui--location-search)
 - [🏗️ Project Architecture](#️-project-architecture)
 - [🔬 Algorithm Comparison: Dijkstra vs A*](#-algorithm-comparison-dijkstra-vs-a)
   - [Theoretical Analysis](#1-theoretical-analysis)
@@ -16,7 +16,7 @@ Both pathfinding algorithms are built from first principles using Python's stand
   - [Empirical Benchmarks (Ranchi Road Network)](#3-empirical-benchmarks-ranchi-road-network)
 - [⚙️ Installation & Virtual Environment](#️-installation--virtual-environment)
 - [🚀 Usage Guide](#-usage-guide)
-  - [1. Launch Interactive Web Navigation UI (Stage 4)](#1-launch-interactive-web-navigation-ui-stage-4)
+  - [1. Launch Interactive Web Navigation UI](#1-launch-interactive-web-navigation-ui)
   - [2. CLI: Side-by-Side Algorithm Comparison](#2-cli-side-by-side-algorithm-comparison)
   - [3. CLI: Routing with A* (Fastest)](#3-cli-routing-with-a-fastest)
   - [4. CLI: Routing with Dijkstra](#4-cli-routing-with-dijkstra)
@@ -26,7 +26,7 @@ Both pathfinding algorithms are built from first principles using Python's stand
   - [8. CLI: Stage 1 Fictional Network Mode](#8-cli-stage-1-fictional-network-mode-backward-compatible)
   - [9. Refreshing Live OpenStreetMap Road Data](#9-refreshing-live-openstreetmap-road-data)
 - [📍 Real-World Map Coverage (Ranchi)](#-real-world-map-coverage-ranchi)
-- [🧪 Automated Testing (61 Tests)](#-automated-testing-61-tests)
+- [🧪 Automated Testing (65 Tests)](#-automated-testing-65-tests)
 - [🔮 Future Roadmap](#-future-roadmap)
 
 ---
@@ -34,14 +34,19 @@ Both pathfinding algorithms are built from first principles using Python's stand
 ## ✨ Features
 
 - **Interactive Streamlit Web Interface (`app.py`)**:
-  - Clean, responsive dashboard designed with Streamlit and Folium.
-  - Searchable **From (Origin)** and **To (Destination)** fields supporting addresses, landmarks, and coordinates.
-  - **OpenStreetMap Nominatim Geocoding**: Live autocompletion suggestions with rate-limiting, local caching, and offline landmark fallback.
-  - **Interactive Map Selection**: Click anywhere on the map to set origin or destination pins.
+  - **Dedicated Location Search Bar**: Search any address, landmark, or place with real-time autocompletion suggestions.
+  - **Instant Map Pinning**: Selecting any search result immediately places a distinctive purple pin (`🔍`) and centers the map on that location.
+  - **Quick Action Endpoints**: Set any searched location as Origin (`🚩`) or Destination (`🏁`) with a single click.
+  - **Embedded Leaflet Search Widget**: Floating in-map search bar directly inside Folium maps for instant client-side searching and smooth `flyTo` camera panning.
+  - **Streamlined User Experience**: Unnecessary algorithmic complexity (algorithm selectors and CPU benchmark numbers) has been removed; the app automatically executes the optimal pathfinding algorithm under the hood.
+  - **Real-World Navigation Metrics**: Realistic travel times:
+    - 📏 **Total Distance** ($\text{km}$ or $\text{m}$)
+    - 🚗 **Estimated Driving Time** (based on urban traffic speeds)
+    - 🚶 **Estimated Walking Time** (based on pedestrian walking pace)
+    - 🛣️ **Route Segments & Intersections**
+  - **Turn-by-Turn Road Corridor Guidance**: Step-by-step street directions grouping consecutive segments into named corridors.
+  - **Interactive Map Selection**: Click anywhere on the map to set origin or destination pins with automatic reverse geocoding.
   - **⇄ Swap Button**: Instant one-click interchange of start and destination points.
-  - **Algorithm Switcher**: Seamlessly toggle between A* Search, Dijkstra's Algorithm, or Side-by-Side Comparison.
-  - **Real-Time Metrics Cards**: Live displays for total distance, execution time ($\mu\text{s}/\text{ms}$), nodes explored, and intersection counts.
-  - **Turn-by-Turn Road Corridor Guidance**: Human-readable navigation itinerary grouping road segments into corridors.
 - **Two Pure-Python Algorithms (From Scratch)**:
   - **Dijkstra's Algorithm**: Exhaustive uniform-cost search tracking cumulative distance $g(n)$.
   - **A\* Search Algorithm**: Informed best-first search tracking $f(n) = g(n) + h(n)$ using the great-circle Haversine distance heuristic.
@@ -52,12 +57,12 @@ Both pathfinding algorithms are built from first principles using Python's stand
   - Complies with Nominatim usage policy (custom User-Agent and $0.5\text{s}$ rate throttling).
   - In-memory LRU query cache to eliminate redundant HTTP requests.
   - Graceful degradation: falls back immediately to built-in local landmarks on network timeouts or API limits.
-- **Full Backward Compatibility**: 100% of Stage 1, Stage 2, and Stage 3 functionality, CLI commands, and test suites are preserved.
-- **Comprehensive Automated Test Suite**: 61 automated tests verifying graph structures, geocoding resilience, algorithm correctness, map visualization, and CLI commands.
+- **Full Backward Compatibility**: 100% of Stage 1, Stage 2, and Stage 3 CLI commands, fictional network mode, and tests are preserved.
+- **Comprehensive Automated Test Suite**: 68 automated tests verifying graph structures, geocoding resilience, search bar pinning, travel time estimation, map visualization, and CLI commands.
 
 ---
 
-## 🖥️ Interactive Web UI (Stage 4)
+## 🖥️ Interactive Web UI & Location Search
 
 Launch the web navigation app with a single command:
 
@@ -68,21 +73,26 @@ streamlit run app.py
 
 ### Web UI Features & Capabilities
 
-1. **Searchable From & To Fields**:
-   - Select predefined landmarks from dropdowns (e.g. *Albert Ekka Chowk*, *Ranchi Railway Station*, *Nucleus Mall*, *Tagore Hill*).
-   - Or select *"🔍 Search Address / Custom Place..."* to query OpenStreetMap Nominatim for real addresses or type raw coordinates `lat, lon`.
-2. **Interactive Map Click-to-Select**:
+1. **Clean Startup Map (Zero Pre-Loaded Directions)**:
+   - When the app opens, the map is clean, spacious, and uncluttered: no pre-calculated routes or forced destination flags.
+   - The full viewport is dedicated to the map and search.
+2. **Dedicated Top Search Bar**:
+   - Type any place, address, or landmark into the top search bar (e.g. *Albert Ekka Chowk*, *Morabadi*, *Nucleus Mall*, *Tagore Hill*, *Main Road*).
+   - Instant suggestions appear in a dropdown list.
+   - Selecting any suggestion **instantly drops a purple search pin on the map** and focuses on that location.
+   - Click `"🚩 Set as Start"` or `"🏁 Set as Dest"` to immediately route to/from that location.
+3. **Single "Go" Button & Sliding Directions Drawer**:
+   - Instead of a permanent, bulky sidebar, a single prominent **"🧭 Go (Directions)"** button floats at the bottom-left of the map.
+   - Clicking **"Go"** smoothly slides out the directions drawer from the left.
+   - Select Origin and Destination endpoints, use the instant `⇄ Swap` button, and hit `🚀 Find Route`.
+   - Click `✕` anytime to close the drawer and view the map full-width.
+4. **Interactive Map Click-to-Select**:
    - Click anywhere on the interactive Leaflet map to inspect coordinates.
-   - Use the `"📍 Set Click as Origin"` or `"🎯 Set Click as Destination"` buttons to update route endpoints with automatic reverse-geocoding.
-3. **One-Click Endpoint Swap (`⇄`)**:
-   - Click the swap button in the sidebar to effortlessly reverse the trip origin and destination.
-4. **Algorithm Selection & Comparison**:
-   - Choose **A\* Search (Recommended)** for ultra-fast goal-directed routing.
-   - Choose **Dijkstra's Algorithm** for classic exhaustive exploration.
-   - Choose **Compare Both** to compute both simultaneously, rendering a comparison banner and detailed benchmark matrix.
-5. **Turn-by-Turn Guidance & Metrics**:
-   - Inspect key performance indicators: Distance ($\text{km}$ or $\text{m}$), Execution Time ($\text{ms}$ or $\mu\text{s}$), Nodes Explored, and Intersections.
-   - Browse the collapsible *"🗺️ Turn-by-Turn Road Corridor Guide"* to see road names, segment distances, and intersection counts.
+   - Use `"📍 Set as Start & Open Go"` or `"🎯 Set as Dest & Open Go"` buttons with automatic reverse-geocoding.
+5. **Practical Trip Navigation Metrics**:
+   - When a route is active: Distance ($\text{km}$/$\text{m}$), estimated driving time, estimated walking time, and total road steps.
+   - Collapsible *"🗺️ Turn-by-Turn Navigation Itinerary"* with exact road names and corridor lengths.
+   - One-click `"✕ Clear Route"` to return to the clean map anytime.
 
 ---
 
@@ -90,16 +100,16 @@ streamlit run app.py
 
 ```text
 Maps/
-├── app.py               # Streamlit + Folium interactive web navigation application (Stage 4)
+├── app.py               # Streamlit + Folium interactive web navigation application
 ├── geocoder.py          # Nominatim geocoder with caching, rate-limiting & landmark fallback
 ├── main.py              # Unified CLI entry point & interactive console session manager
 ├── graph.py             # Weighted Graph & Edge dataclasses with (lat, lon) coordinates
 ├── dijkstra.py          # Custom Dijkstra algorithm with min-heap priority queue (from scratch)
 ├── astar.py             # Custom A* algorithm with Haversine distance heuristic (from scratch)
 ├── osm_loader.py        # OSMnx downloader, JSON cache serializer, coordinate resolver
-├── map_view.py          # Folium interactive HTML map generator with markers, routes, and HUD
+├── map_view.py          # Folium interactive HTML map generator with markers, search widget, and routes
 ├── display.py           # Terminal rendering, turn-by-turn road corridors, comparison tables
-├── tests.py             # 61 automated unit & integration tests (unittest)
+├── tests.py             # 65 automated unit & integration tests (unittest)
 ├── requirements.txt     # Dependencies (osmnx, folium, streamlit, streamlit-folium)
 ├── data/
 │   └── ranchi_network.json  # Serialized real-world road network cache (~2,500 nodes, ~6,200 edges)
@@ -110,16 +120,16 @@ Maps/
 
 | Module | Core Responsibility |
 |---|---|
-| [`app.py`](app.py) | Complete Streamlit web navigation UI: searchable inputs, swap button, algorithm selection, Folium map rendering, click handler, and metric cards. |
+| [`app.py`](app.py) | Streamlit web navigation UI: location search bar with instant map pins, searchable endpoints, swap button, Folium map rendering, click handler, and travel time ETA cards. |
 | [`geocoder.py`](geocoder.py) | OpenStreetMap Nominatim geocoding & reverse geocoding with custom User-Agent, $0.5\text{s}$ rate-limiting, in-memory caching, coordinate parser, and local landmark fallback. |
-| [`map_view.py`](map_view.py) | Builds interactive Folium Leaflet maps for standalone export (`route_map.html`) and direct Streamlit embedding via `build_folium_map()` and `build_empty_map()`. |
+| [`map_view.py`](map_view.py) | Builds interactive Folium Leaflet maps with client-side floating search box, search pins, route polylines, and clean trip navigation HUD. |
 | [`astar.py`](astar.py) | Custom A* implementation using `heapq` and $f(n) = g(n) + h(n)$ evaluation with Haversine straight-line distance heuristic. |
 | [`dijkstra.py`](dijkstra.py) | Custom Dijkstra implementation using `heapq`. Exhaustive priority queue search tracking cumulative distance $g(n)$. |
 | [`graph.py`](graph.py) | Adjacency-list `Graph` storing node coordinates `(lat, lon)`, curved edge geometries, and fast vectorized `find_nearest_node()`. |
 | [`osm_loader.py`](osm_loader.py) | Ingests real road networks from OpenStreetMap via OSMnx, manages local JSON caching, and resolves landmark names or GPS coordinates. |
 | [`display.py`](display.py) | Formats terminal output: side-by-side benchmark tables, turn-by-turn itineraries, and formatted metric strings. |
 | [`main.py`](main.py) | CLI argument parser (`argparse`), dual-mode selector (Real-World OSM vs Fictional Stage 1), and interactive console navigator. |
-| [`tests.py`](tests.py) | 61 automated tests verifying graph structures, Dijkstra and A* correctness, geocoder resilience, map generation, and CLI commands. |
+| [`tests.py`](tests.py) | 65 automated tests verifying graph structures, Dijkstra and A* correctness, search bar pinning, travel time ETA, geocoder resilience, and CLI commands. |
 
 ---
 
@@ -195,7 +205,7 @@ pip install -r requirements.txt
 
 ## 🚀 Usage Guide
 
-### 1. Launch Interactive Web Navigation UI (Stage 4)
+### 1. Launch Interactive Web Navigation UI
 
 Start the web application:
 
@@ -203,7 +213,7 @@ Start the web application:
 streamlit run app.py
 ```
 
-The browser will open automatically at `http://localhost:8501`. Use the sidebar to search for locations, swap endpoints, select algorithms, and visualize the route.
+The browser will open automatically at `http://localhost:8501`. Use the search bar to find places, inspect map pins, set route endpoints, and view turn-by-turn guidance.
 
 ### 2. CLI: Side-by-Side Algorithm Comparison
 
@@ -280,11 +290,6 @@ Launch the interactive console navigator with algorithm selection:
 python main.py
 ```
 
-Prompts allow:
-1. Choosing between the **Real-World Network** and the **Fictional Regional Network**.
-2. Selecting the pathfinding algorithm: `[1] A*`, `[2] Dijkstra`, or `[3] Compare Both`.
-3. Selecting landmarks by index `[1-10]`, typing names, or entering `lat, lon`.
-
 ### 7. CLI: Listing Landmarks & Fictional Towns
 
 - **List Ranchi Landmarks**:
@@ -298,10 +303,10 @@ Prompts allow:
 
 ### 8. CLI: Stage 1 Fictional Network Mode (Backward-Compatible)
 
-The fictional network from Stage 1 remains fully accessible with algorithm selection:
+The fictional network from Stage 1 remains fully accessible:
 
 ```bash
-python main.py --fictional -s "Bayview" -d "Frostford" --compare
+python main.py --fictional -s "Bayview" -d "Frostford"
 ```
 
 ### 9. Refreshing Live OpenStreetMap Road Data
@@ -333,9 +338,9 @@ The real-world network covers central **Ranchi, Jharkhand, India** ($2,493$ inte
 
 ---
 
-## 🧪 Automated Testing (61 Tests)
+## 🧪 Automated Testing (65 Tests)
 
-The automated test suite in [`tests.py`](tests.py) comprises **61 tests** covering Stage 1, Stage 2, Stage 3, and Stage 4:
+The automated test suite in [`tests.py`](tests.py) comprises **65 tests**:
 
 ```bash
 python -m unittest -v tests.py
@@ -343,33 +348,30 @@ python -m unittest -v tests.py
 
 ### Test Coverage Breakdown
 
-- **Stage 4 Navigation UI & Geocoder (`TestGeocoder`, `TestStage4UI`)**:
-  - Nominatim search with query parsing, raw coordinate parsing, and limit handling.
-  - In-memory search query caching.
-  - Local landmark fallback matching when offline or with empty queries.
-  - Proximity-based reverse geocoding to recognizable landmarks.
+- **Interactive UI, Search Bar & Map Builders (`TestStage4UI`, `TestGeocoder`)**:
+  - Live query geocoding, coordinate parsing, and in-memory cache validation.
+  - Location search bar suggestions with instant map pin placement (`searched_point`).
+  - Embedded Leaflet client-side floating search widget.
+  - Realistic driving and walking travel time estimation (`estimate_travel_time`).
+  - User-focused navigation HUD verification (omits CPU benchmarks, displays ETA).
   - Folium map instance builders (`build_folium_map`, `build_empty_map`).
 - **A\* Pathfinding Core (`TestAStar`)**:
   - Great-circle Haversine distance accuracy and symmetry.
   - Heuristic admissibility and consistency verification ($h(u, v) \le \text{edge.weight}$).
   - A* graceful degradation on graphs without coordinates (matches Dijkstra 100%).
   - Optimal path selection over multi-hop vs direct routes (triangle inequality).
-  - Identical start/destination ($0\text{ m}$).
-  - Unreachable destination handling ($\infty$).
-  - Negative edge weight detection defense (`ValueError`).
+  - Identical start/destination ($0\text{ m}$) and unreachable destination handling ($\infty$).
   - Strict distance parity with Dijkstra on real-world routes ($\Delta \le 0.1\text{ m}$).
   - Substantial node exploration reduction verification.
 - **Algorithm Comparison & Visualization (`TestAlgorithmComparison`, `TestMapView`)**:
   - Comparison table output rendering.
   - Dual-algorithm interactive map generation with comparison HUD.
 - **CLI & Core Integration (`TestMainCLIIntegration`, `TestStage2CLI`, `TestStage3CLI`, `TestGraph`, `TestDijkstra`, `TestDisplay`, `TestOSMLoader`)**:
-  - `--algorithm astar` and `--algorithm dijkstra` execution.
-  - `--compare` and `-c` side-by-side benchmark execution.
-  - Fictional and real-world landmark and coordinate routing.
+  - CLI routing execution for fictional and real-world networks.
   - Backward compatibility across all previous stages.
 
 ```text
-Ran 61 tests in 2.661s
+Ran 65 tests in 5.334s
 OK
 ```
 
