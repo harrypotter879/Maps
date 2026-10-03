@@ -459,6 +459,8 @@ def build_folium_map(
     start_label: str = "Origin",
     dest_label: str = "Destination",
     comparison_result: Optional[PathResult] = None,
+    alternative_results: Optional[List[PathResult]] = None,
+    active_route_index: int = 0,
     searched_point: Optional[Tuple[float, float, str]] = None,
     current_location: Optional[Tuple[float, float, str]] = None,
     show_algorithm_stats: bool = False,
@@ -579,15 +581,41 @@ def build_folium_map(
         """
     else:
         # Standard clean user-friendly navigation HUD
-        if primary_points:
-            folium.PolyLine(
-                locations=primary_points,
-                color="#2563EB",  # Royal blue
-                weight=6,
-                opacity=0.85,
-                popup=f"Route: {start_label} ➔ {dest_label}<br>Distance: {dist_display}<br>Est. Drive: ~{est_drive}",
-                tooltip=f"Shortest Route ({dist_display})",
-            ).add_to(m)
+        if alternative_results and len(alternative_results) > 1:
+            for i, alt_res in enumerate(alternative_results):
+                if i == active_route_index:
+                    continue
+                alt_points = _extract_polyline_points(graph, alt_res.path)
+                all_bounds_points.extend(alt_points)
+                alt_dist = f"{alt_res.total_distance / 1000:.2f} km" if alt_res.total_distance >= 1000 else f"{alt_res.total_distance:.0f} meters"
+                folium.PolyLine(
+                    locations=alt_points,
+                    color="#93C5FD",  # Light blue
+                    weight=5,
+                    opacity=0.7,
+                    popup=f"Alternative Route {i+1}<br>Distance: {alt_dist}",
+                    tooltip=f"Alternative Route {i+1} ({alt_dist})",
+                ).add_to(m)
+
+            if primary_points:
+                folium.PolyLine(
+                    locations=primary_points,
+                    color="#2563EB",  # Royal blue
+                    weight=6,
+                    opacity=0.9,
+                    popup=f"Selected Route: {start_label} ➔ {dest_label}<br>Distance: {dist_display}<br>Est. Drive: ~{est_drive}",
+                    tooltip=f"Selected Route ({dist_display})",
+                ).add_to(m)
+        else:
+            if primary_points:
+                folium.PolyLine(
+                    locations=primary_points,
+                    color="#2563EB",  # Royal blue
+                    weight=6,
+                    opacity=0.85,
+                    popup=f"Route: {start_label} ➔ {dest_label}<br>Distance: {dist_display}<br>Est. Drive: ~{est_drive}",
+                    tooltip=f"Shortest Route ({dist_display})",
+                ).add_to(m)
 
         hud_html = f"""
         <div style="
@@ -722,6 +750,8 @@ def generate_interactive_map(
     dest_label: str = "Destination",
     output_path: str = "route_map.html",
     comparison_result: Optional[PathResult] = None,
+    alternative_results: Optional[List[PathResult]] = None,
+    active_route_index: int = 0,
     searched_point: Optional[Tuple[float, float, str]] = None,
     current_location: Optional[Tuple[float, float, str]] = None,
     show_algorithm_stats: bool = False,
@@ -738,6 +768,8 @@ def generate_interactive_map(
         start_label=start_label,
         dest_label=dest_label,
         comparison_result=comparison_result,
+        alternative_results=alternative_results,
+        active_route_index=active_route_index,
         searched_point=searched_point,
         current_location=current_location,
         show_algorithm_stats=show_algorithm_stats,

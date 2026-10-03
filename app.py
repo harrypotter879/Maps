@@ -22,7 +22,7 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 from graph import Graph, create_sample_road_network
-from astar import find_shortest_path_astar
+from astar import find_shortest_path_astar, find_alternative_routes
 from dijkstra import PathResult
 from osm_loader import get_ranchi_road_network, RANCHI_LANDMARKS
 from geocoder import search_locations, reverse_geocode, GeocodedLocation
@@ -90,6 +90,10 @@ def init_session_state() -> None:
     # NO route by default at startup! Clean map until user requests directions
     if "route_result" not in st.session_state:
         st.session_state.route_result = None
+    if "alternative_results" not in st.session_state:
+        st.session_state.alternative_results = None
+    if "active_route_index" not in st.session_state:
+        st.session_state.active_route_index = 0
 
     if "searched_location" not in st.session_state:
         st.session_state.searched_location = None  # (lat, lon, name)
@@ -127,6 +131,9 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
     """Helper to render interactive Folium map with current points, blue dot marker, or clean state."""
     if primary_result and primary_result.found:
         graph = load_cached_osm_network() if is_realworld else load_fictional_network()
+        alt_res = st.session_state.get("alternative_results")
+        active_idx = st.session_state.get("active_route_index", 0)
+
         if is_realworld:
             folium_map = build_folium_map(
                 graph=graph,
@@ -137,6 +144,8 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
                 dest_label=st.session_state.dest_name,
                 searched_point=st.session_state.searched_location,
                 current_location=st.session_state.my_location,
+                alternative_results=alt_res,
+                active_route_index=active_idx,
                 show_hud=False,  # Keep map canvas clean!
             )
         else:
@@ -452,12 +461,36 @@ def main() -> None:
         with col_c1:
             if st.button("✕ Clear Route", key="btn_clear_active_route", use_container_width=True):
                 st.session_state.route_result = None
+                st.session_state.alternative_results = None
                 st.rerun()
         with col_c2:
             if not st.session_state.show_route_menu:
                 if st.button("✏️ Edit Route", key="btn_edit_active_route", use_container_width=True):
                     st.session_state.show_route_menu = True
                     st.rerun()
+
+        alt_results = st.session_state.get("alternative_results")
+        if alt_results and len(alt_results) > 1:
+            st.markdown("<div style='margin-top:10px; margin-bottom:5px; font-weight:600; color:#334155;'>🔄 Alternative Routes:</div>", unsafe_allow_html=True)
+            options = []
+            for i, res in enumerate(alt_results):
+                r_dist = f"{res.total_distance/1000:.2f} km" if res.total_distance >= 1000 else f"{res.total_distance:.0f} m"
+                r_time = estimate_travel_time(res.total_distance, speed_kmh=30.0)
+                options.append(f"Route {i+1} ({r_dist}, ~{r_time})")
+                
+            selected_route = st.radio(
+                "Select Route", 
+                options=options, 
+                index=st.session_state.get("active_route_index", 0), 
+                horizontal=True, 
+                label_visibility="collapsed"
+            )
+            
+            selected_idx = options.index(selected_route)
+            if selected_idx != st.session_state.get("active_route_index", 0):
+                st.session_state.active_route_index = selected_idx
+                st.session_state.route_result = alt_results[selected_idx]
+                st.rerun()
 
     elif primary_result and not primary_result.found:
         st.error(f"❌ No route found between '{st.session_state.start_name}' and '{st.session_state.dest_name}'.")
@@ -581,13 +614,27 @@ def main() -> None:
                         start_node, _ = graph.find_nearest_node(start_lat, start_lon)
                         dest_node, _ = graph.find_nearest_node(dest_lat, dest_lon)
                         with st.spinner("Finding optimal route..."):
-                            st.session_state.route_result = find_shortest_path_astar(graph, start_node, dest_node)
+                            alts = find_alternative_routes(graph, start_node, dest_node, max_routes=3)
+                            if alts:
+                                st.session_state.alternative_results = alts
+                                st.session_state.route_result = alts[0]
+                                st.session_state.active_route_index = 0
+                            else:
+                                st.session_state.alternative_results = []
+                                st.session_state.route_result = find_shortest_path_astar(graph, start_node, dest_node)
                             st.rerun()
                     except Exception as e:
                         st.error(f"Error mapping coordinates: {e}")
                 else:
                     fict_graph = load_fictional_network()
-                    st.session_state.route_result = find_shortest_path_astar(fict_graph, st.session_state.start_name, st.session_state.dest_name)
+                    alts = find_alternative_routes(fict_graph, st.session_state.start_name, st.session_state.dest_name, max_routes=3)
+                    if alts:
+                        st.session_state.alternative_results = alts
+                        st.session_state.route_result = alts[0]
+                        st.session_state.active_route_index = 0
+                    else:
+                        st.session_state.alternative_results = []
+                        st.session_state.route_result = find_shortest_path_astar(fict_graph, st.session_state.start_name, st.session_state.dest_name)
                     st.rerun()
 
             st.markdown('</div>', unsafe_allow_html=True)

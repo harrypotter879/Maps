@@ -59,6 +59,7 @@ def find_shortest_path_astar(
     source: str,
     destination: str,
     heuristic: Optional[Callable[[Graph, str, str], float]] = None,
+    edge_penalties: Optional[Dict[Tuple[str, str], float]] = None,
 ) -> PathResult:
     """
     Find the shortest path between `source` and `destination` using the A* algorithm from scratch.
@@ -146,14 +147,18 @@ def find_shortest_path_astar(
         current_g = g_score[current_node]
 
         for edge in graph.get_neighbors(current_node):
-            if edge.weight < 0:
+            weight = edge.weight
+            if edge_penalties:
+                weight *= edge_penalties.get((current_node, edge.destination), 1.0)
+                
+            if weight < 0:
                 raise ValueError(
-                    f"Negative edge weight ({edge.weight}) detected on connection "
+                    f"Negative edge weight ({weight}) detected on connection "
                     f"'{current_node}' -> '{edge.destination}'. "
                     "A* search requires non-negative edge weights."
                 )
 
-            tentative_g = current_g + edge.weight
+            tentative_g = current_g + weight
 
             # Relaxation step: update neighbor if a shorter route to it was discovered
             if tentative_g < g_score[edge.destination]:
@@ -212,3 +217,44 @@ def find_shortest_path_astar(
         found=True,
         algorithm="A*",
     )
+
+def find_alternative_routes(
+    graph: Graph,
+    source: str,
+    destination: str,
+    max_routes: int = 3,
+    penalty_factor: float = 1.5,
+) -> List[PathResult]:
+    """
+    Finds up to `max_routes` alternative paths between source and destination.
+    Uses an edge-penalization approach on the A* algorithm.
+    """
+    routes = []
+    penalties: Dict[Tuple[str, str], float] = {}
+
+    for _ in range(max_routes):
+        res = find_shortest_path_astar(
+            graph, source, destination, edge_penalties=penalties
+        )
+        if not res.found:
+            break
+
+        # Check if this route is substantially different or identical
+        # by checking if path is already in routes
+        if not any(r.path == res.path for r in routes):
+            routes.append(res)
+        else:
+            # If we keep finding the exact same route even with penalties,
+            # we might want to increase the penalty factor further for its edges
+            # But normally, multiplying by penalty factor breaks the tie.
+            pass
+
+        # Penalize edges of the newly found path to encourage diversity
+        for i in range(len(res.path) - 1):
+            u = res.path[i]
+            v = res.path[i+1]
+            penalties[(u, v)] = penalties.get((u, v), 1.0) * penalty_factor
+            # Also penalize the reverse edge if we want to discourage backtracking
+            penalties[(v, u)] = penalties.get((v, u), 1.0) * penalty_factor
+
+    return routes
