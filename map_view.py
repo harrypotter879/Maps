@@ -268,21 +268,24 @@ def _add_search_widget(m: Any) -> None:
                             data.forEach(function(item) {{
                                 var lat = parseFloat(item.lat);
                                 var lon = parseFloat(item.lon);
-                                var name = item.name || item.display_name.split(',')[0];
-                                var exists = matches.some(function(m) {{
-                                    return Math.abs(m.lat - lat) < 0.001 && Math.abs(m.lon - lon) < 0.001;
-                                }});
-                                if (!exists) {{
+                                var name = item.name || item.display_name.split(',')[0].trim();
+                                if (!extra.some(function(ex) {{ return Math.abs(ex.lat - lat) < 0.0008 && Math.abs(ex.lon - lon) < 0.0008; }})) {{
                                     extra.push({{
                                         name: name,
                                         lat: lat,
                                         lon: lon,
-                                        display: item.display_name
+                                        display: item.display_name + ' (OSM Nominatim)'
                                     }});
                                 }}
                             }});
                             if (extra.length > 0) {{
-                                renderSuggestions(matches.concat(extra).slice(0, 7));
+                                var remaining = matches.filter(function(m) {{
+                                    return !extra.some(function(ex) {{
+                                        return (Math.abs(ex.lat - m.lat) < 0.005 && Math.abs(ex.lon - m.lon) < 0.005) ||
+                                               (ex.name.toLowerCase() === m.name.toLowerCase());
+                                    }});
+                                }});
+                                renderSuggestions(extra.concat(remaining).slice(0, 8));
                             }}
                         }})
                         .catch(function(err) {{}});
@@ -321,12 +324,64 @@ def _add_search_widget(m: Any) -> None:
     m.get_root().html.add_child(folium.Element(search_html))
 
 
+def _add_current_location_marker(m: Any, current_location: Tuple[float, float, str]) -> None:
+    """Render a glowing blue dot marker representing the user's current location."""
+    import folium
+
+    c_lat, c_lon, c_label = current_location
+    blue_dot_html = f"""
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; min-width: 150px;">
+        <h4 style="margin: 0 0 4px 0; color: #2563EB; font-size: 14px;">🔵 My Current Location</h4>
+        <b>{c_label}</b><br>
+        <span style="font-size: 11px; color: #666;">Lat: {c_lat:.5f}, Lon: {c_lon:.5f}</span>
+    </div>
+    """
+
+    dot_div_icon = folium.DivIcon(
+        html=f'''
+        <div style="
+            width: 22px;
+            height: 22px;
+            background-color: #2563EB;
+            border-radius: 50%;
+            border: 3px solid #FFFFFF;
+            box-shadow: 0 0 0 5px rgba(37, 99, 235, 0.38), 0 3px 8px rgba(0,0,0,0.35);
+            transform: translate(-11px, -11px);
+        "></div>
+        ''',
+        icon_size=(22, 22),
+        icon_anchor=(11, 11),
+    )
+
+    folium.Marker(
+        location=[c_lat, c_lon],
+        popup=folium.Popup(blue_dot_html, max_width=250),
+        tooltip=f"🔵 My Location: {c_label}",
+        icon=dot_div_icon,
+    ).add_to(m)
+
+
+def _add_locate_control(m: Any) -> None:
+    """Add Leaflet LocateControl button to map for auto-locating position."""
+    try:
+        from folium.plugins import LocateControl
+        LocateControl(
+            auto_start=False,
+            flyTo=True,
+            keepCurrentZoomLevel=False,
+            strings={"title": "Show my location", "popup": "You are within {distance} {unit} from this point"},
+        ).add_to(m)
+    except Exception:
+        pass
+
+
 def build_empty_map(
     center: Tuple[float, float] = (23.3699, 85.3253),
     zoom: int = 14,
     start_point: Optional[Tuple[float, float, str]] = None,
     dest_point: Optional[Tuple[float, float, str]] = None,
     searched_point: Optional[Tuple[float, float, str]] = None,
+    current_location: Optional[Tuple[float, float, str]] = None,
     include_search_bar: bool = True,
 ) -> Any:
     """
@@ -337,7 +392,10 @@ def build_empty_map(
     map_center = center
     map_zoom = zoom
 
-    if searched_point and not start_point and not dest_point:
+    if current_location and not start_point and not dest_point and not searched_point:
+        map_center = (current_location[0], current_location[1])
+        map_zoom = 15
+    elif searched_point and not start_point and not dest_point:
         map_center = (searched_point[0], searched_point[1])
         map_zoom = 15
 
@@ -382,6 +440,11 @@ def build_empty_map(
             icon=folium.Icon(color="purple", icon="search", prefix="fa"),
         ).add_to(m)
 
+    if current_location:
+        _add_current_location_marker(m, current_location)
+
+    _add_locate_control(m)
+
     if include_search_bar:
         _add_search_widget(m)
 
@@ -397,6 +460,7 @@ def build_folium_map(
     dest_label: str = "Destination",
     comparison_result: Optional[PathResult] = None,
     searched_point: Optional[Tuple[float, float, str]] = None,
+    current_location: Optional[Tuple[float, float, str]] = None,
     show_algorithm_stats: bool = False,
     include_search_bar: bool = True,
     show_hud: bool = True,
@@ -560,27 +624,33 @@ def build_folium_map(
     if show_hud:
         m.get_root().html.add_child(folium.Element(hud_html))
 
-    # Connect off-road start/destination points
+    # Connect off-road start/destination points (only if within reasonable 500m access walk)
     if result.found and result.path:
+        from astar import haversine_distance
+
         first_node_coord = graph.get_node_coords(result.path[0])
-        if first_node_coord and (first_node_coord[0] != start_coord[0] or first_node_coord[1] != start_coord[1]):
-            folium.PolyLine(
-                locations=[[start_coord[0], start_coord[1]], [first_node_coord[0], first_node_coord[1]]],
-                color="#10B981",
-                weight=3,
-                dash_array="6",
-                tooltip="Access to road network",
-            ).add_to(m)
+        if first_node_coord:
+            start_offroad_m = haversine_distance(start_coord, first_node_coord)
+            if 5.0 <= start_offroad_m <= 500.0:
+                folium.PolyLine(
+                    locations=[[start_coord[0], start_coord[1]], [first_node_coord[0], first_node_coord[1]]],
+                    color="#10B981",
+                    weight=3,
+                    dash_array="6",
+                    tooltip=f"Access walk ({start_offroad_m:.0f}m)",
+                ).add_to(m)
 
         last_node_coord = graph.get_node_coords(result.path[-1])
-        if last_node_coord and (last_node_coord[0] != dest_coord[0] or last_node_coord[1] != dest_coord[1]):
-            folium.PolyLine(
-                locations=[[last_node_coord[0], last_node_coord[1]], [dest_coord[0], dest_coord[1]]],
-                color="#EF4444",
-                weight=3,
-                dash_array="6",
-                tooltip="Final arrival step",
-            ).add_to(m)
+        if last_node_coord:
+            dest_offroad_m = haversine_distance(dest_coord, last_node_coord)
+            if 5.0 <= dest_offroad_m <= 500.0:
+                folium.PolyLine(
+                    locations=[[last_node_coord[0], last_node_coord[1]], [dest_coord[0], dest_coord[1]]],
+                    color="#EF4444",
+                    weight=3,
+                    dash_array="6",
+                    tooltip=f"Final arrival step ({dest_offroad_m:.0f}m)",
+                ).add_to(m)
 
     # Origin Marker (Green)
     start_html = f"""
@@ -630,6 +700,12 @@ def build_folium_map(
         ).add_to(m)
         all_bounds_points.append([s_lat, s_lon])
 
+    if current_location:
+        _add_current_location_marker(m, current_location)
+        all_bounds_points.append([current_location[0], current_location[1]])
+
+    _add_locate_control(m)
+
     if include_search_bar:
         _add_search_widget(m)
 
@@ -647,6 +723,7 @@ def generate_interactive_map(
     output_path: str = "route_map.html",
     comparison_result: Optional[PathResult] = None,
     searched_point: Optional[Tuple[float, float, str]] = None,
+    current_location: Optional[Tuple[float, float, str]] = None,
     show_algorithm_stats: bool = False,
     include_search_bar: bool = True,
 ) -> str:
@@ -662,6 +739,7 @@ def generate_interactive_map(
         dest_label=dest_label,
         comparison_result=comparison_result,
         searched_point=searched_point,
+        current_location=current_location,
         show_algorithm_stats=show_algorithm_stats,
         include_search_bar=include_search_bar,
     )

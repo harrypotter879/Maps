@@ -863,6 +863,79 @@ class TestGeocoder(unittest.TestCase):
         r2 = search_locations("Nucleus Mall")
         self.assertEqual(r1, r2)
 
+    def test_ranchi_university_coordinates_accurate(self) -> None:
+        """Verify Ranchi University landmark coordinates are pinpointed to the Kutchery campus."""
+        from osm_loader import RANCHI_LANDMARKS
+        self.assertIn("Ranchi University", RANCHI_LANDMARKS)
+        lat, lon = RANCHI_LANDMARKS["Ranchi University"]
+        self.assertAlmostEqual(lat, 23.3718, places=3)
+        self.assertAlmostEqual(lon, 85.3243, places=3)
+
+    def test_expanded_ranchi_landmarks_coverage(self) -> None:
+        """Verify wide geographic coverage across Ranchi (over 40 landmarks)."""
+        from osm_loader import RANCHI_LANDMARKS
+        self.assertGreaterEqual(len(RANCHI_LANDMARKS), 40)
+        expected_places = [
+            "Birsa Munda Airport",
+            "Hatia Railway Station",
+            "BIT Mesra",
+            "RIMS Hospital",
+            "Sadar Hospital",
+            "Mall of Ranchi",
+            "JSCA International Stadium",
+            "Jharkhand High Court",
+            "Lalpur Chowk",
+            "Argora Chowk",
+            "Morabadi Ground",
+        ]
+        for place in expected_places:
+            self.assertIn(place, RANCHI_LANDMARKS)
+
+    def test_format_display_label(self) -> None:
+        """Verify informative label formatting for search suggestions."""
+        from geocoder import GeocodedLocation
+        nom = GeocodedLocation(
+            name="Ranchi University",
+            display_name="Ranchi University, MDR011, Chadri, Ranchi, Kanke, Ranchi, Jharkhand, 834001, India",
+            lat=23.3718,
+            lon=85.3243,
+            source="nominatim",
+        )
+        self.assertIn("Ranchi University", nom.format_display_label())
+        self.assertIn("OSM Nominatim", nom.format_display_label())
+        self.assertIn("Chadri", nom.format_display_label())
+
+        lm = GeocodedLocation(
+            name="Albert Ekka Chowk",
+            display_name="Albert Ekka Chowk, Ranchi, Jharkhand, India",
+            lat=23.3699,
+            lon=85.3253,
+            source="landmark",
+        )
+        self.assertIn("Albert Ekka Chowk", lm.format_display_label())
+        self.assertIn("Landmark", lm.format_display_label())
+
+        coord = GeocodedLocation(
+            name="GPS (23.3699, 85.3253)",
+            display_name="Coordinates: Latitude 23.36990, Longitude 85.32530",
+            lat=23.3699,
+            lon=85.3253,
+            source="coordinate",
+        )
+        self.assertIn("GPS", coord.format_display_label())
+
+    def test_nominatim_prioritized_in_search(self) -> None:
+        """Verify that OpenStreetMap Nominatim results appear first in search results."""
+        from geocoder import search_locations
+        results = search_locations("Ranchi University", limit=5)
+        self.assertGreaterEqual(len(results), 1)
+        top = results[0]
+        # Top result must be Nominatim
+        self.assertEqual(top.source, "nominatim")
+        # And coordinates must match the true Kutchery / Chadri campus
+        self.assertAlmostEqual(top.lat, 23.3718, delta=0.01)
+        self.assertAlmostEqual(top.lon, 85.3243, delta=0.01)
+
 
 class TestStage4UI(unittest.TestCase):
     """Tests for Stage 4 Streamlit UI helpers and map builders."""
@@ -1025,7 +1098,41 @@ class TestStage4UI(unittest.TestCase):
         self.assertIn("st.session_state.route_result = None", src)
         self.assertIn("st.session_state.show_route_menu = False", src)
 
+    def test_current_location_marker_rendering(self) -> None:
+        """Verify that current location renders glowing blue dot marker and LocateControl."""
+        from map_view import build_empty_map, build_folium_map
+        from osm_loader import get_ranchi_road_network, resolve_location_or_coords
+        from astar import find_shortest_path_astar
+
+        my_loc = (23.3699, 85.3253, "My Location")
+
+        # In empty map
+        m_empty = build_empty_map(current_location=my_loc)
+        html_empty = m_empty._repr_html_()
+        self.assertIn("My Location", html_empty)
+        self.assertIn("#2563EB", html_empty)
+
+        # In route map
+        graph = get_ranchi_road_network()
+        u, u_coords, u_name = resolve_location_or_coords(graph, "Albert Ekka Chowk")
+        v, v_coords, v_name = resolve_location_or_coords(graph, "Ranchi Railway Station")
+        res = find_shortest_path_astar(graph, u, v)
+
+        m_route = build_folium_map(
+            graph=graph,
+            result=res,
+            start_coord=u_coords,
+            dest_coord=v_coords,
+            start_label=u_name,
+            dest_label=v_name,
+            current_location=my_loc,
+        )
+        html_route = m_route._repr_html_()
+        self.assertIn("My Location", html_route)
+        self.assertIn("#2563EB", html_route)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

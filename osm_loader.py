@@ -17,18 +17,81 @@ from typing import Dict, List, Optional, Tuple
 from graph import Graph
 
 
-# Predefined key landmarks in Ranchi, Jharkhand, India
+# Predefined key landmarks, transit hubs, hospitals, and localities in Ranchi, Jharkhand, India
 RANCHI_LANDMARKS: Dict[str, Tuple[float, float]] = {
+    # Central Chowks & Hubs
     "Albert Ekka Chowk": (23.3699, 85.3253),
-    "Ranchi Railway Station": (23.3512, 85.3347),
-    "Nucleus Mall": (23.3725, 85.3315),
-    "Morabadi Ground": (23.3880, 85.3300),
-    "Main Road Overbridge": (23.3565, 85.3285),
+    "Firayalal Chowk": (23.3699, 85.3253),
     "Sujata Chowk": (23.3590, 85.3270),
+    "Main Road Overbridge": (23.3565, 85.3285),
+    "Siramtoli Chowk": (23.3540, 85.3330),
+    "Lalpur Chowk": (23.3722, 85.3383),
+    "Kantatoli Chowk": (23.3670, 85.3475),
+    "Kutchery Chowk": (23.3789, 85.3252),
+    "Shaheed Chowk": (23.3712, 85.3248),
+    "Hinoo Chowk": (23.3289, 85.3170),
+    "Argora Chowk": (23.3502, 85.2981),
+    "Birsa Chowk": (23.3195, 85.3135),
+    "Booty More": (23.3954, 85.3844),
+    "Kokar Chowk": (23.3756, 85.3521),
+
+    # Transit Stations & Terminals
+    "Ranchi Railway Station": (23.3512, 85.3347),
+    "Hatia Railway Station": (23.3131, 85.3059),
+    "Birsa Munda Airport": (23.3146, 85.3255),
+    "Birsa Munda Bus Terminal (Khadgarha)": (23.3655, 85.3520),
+    "ITI Bus Stand": (23.3812, 85.2872),
+
+    # Higher Education & Schools
+    "Kairali School": (23.3191843, 85.2987681),
+    "Ranchi University": (23.3718, 85.3243),  # Main Campus (Kutchery / Line Tank)
+    "Ranchi University (Morabadi)": (23.3888, 85.3228),
     "St. Xavier's College": (23.3640, 85.3260),
-    "Tagore Hill": (23.3980, 85.3420),
-    "Ranchi University": (23.3800, 85.3275),
+    "BIT Mesra": (23.4243, 85.4385),
+    "IIM Ranchi": (23.3073, 85.2891),
+    "Ranchi Women's College": (23.3785, 85.3285),
+
+    # Hospitals & Healthcare
+    "RIMS Hospital": (23.3906, 85.3480),
+    "Sadar Hospital": (23.3670, 85.3265),
+    "Paras HEC Hospital": (23.3125, 85.2985),
+    "Orchid Medical Centre": (23.3665, 85.3290),
+
+    # Shopping Malls & Commercial
+    "Nucleus Mall": (23.3725, 85.3315),
+    "Mall of Ranchi": (23.3784, 85.3147),
+    "JD High Street Mall": (23.3537, 85.3283),
+    "Spring City Mall": (23.3285, 85.3240),
     "Doranda Market": (23.3380, 85.3250),
+    "Upper Bazar": (23.3726, 85.3215),
+
+    # Prominent Landmarks, Parks & Culture
+    "Morabadi Ground": (23.3880, 85.3300),
+    "Tagore Hill": (23.4014, 85.3380),
+    "Pahari Mandir": (23.3781, 85.3120),
+    "Jagannath Temple": (23.3169, 85.2818),
+    "JSCA International Stadium": (23.3105, 85.2749),
+    "Rock Garden": (23.4035, 85.3127),
+    "Kanke Dam": (23.3974, 85.3029),
+    "Dhurwa Dam": (23.2925, 85.2635),
+    "Raj Bhavan": (23.3745, 85.3235),
+    "Jharkhand High Court": (23.3152, 85.2696),
+    "Jharkhand State Assembly": (23.2965, 85.2835),
+
+    # Key Neighborhoods & Colonies
+    "Harmu Housing Colony": (23.3610, 85.3102),
+    "Ashok Nagar": (23.3489, 85.3052),
+    "Kadru": (23.3530, 85.3170),
+    "Bariatu": (23.3890, 85.3530),
+    "Kokar": (23.3756, 85.3521),
+    "Namkum": (23.3430, 85.3785),
+    "Tupudana": (23.2840, 85.3150),
+    "Dhurwa": (23.3120, 85.2950),
+    "Kanke": (23.4150, 85.3220),
+    "Chutia": (23.3550, 85.3450),
+    "Doranda": (23.3360, 85.3250),
+    "Hinoo": (23.3289, 85.3170),
+    "Radisson Blu Hotel": (23.3485, 85.3288),
 }
 
 DEFAULT_CACHE_PATH = os.path.join(os.path.dirname(__file__), "data", "ranchi_network.json")
@@ -146,7 +209,7 @@ def save_graph_to_json(
 def download_osm_road_network(
     center_lat: float = 23.3699,
     center_lon: float = 85.3253,
-    dist_m: int = 1800,
+    dist_m: int = 7500,
     network_type: str = "drive",
     cache_path: Optional[str] = None,
 ) -> Graph:
@@ -156,7 +219,7 @@ def download_osm_road_network(
     Args:
         center_lat: Latitude of central point (default: Albert Ekka Chowk, Ranchi).
         center_lon: Longitude of central point.
-        dist_m: Radius around center in meters.
+        dist_m: Radius around center in meters (default: 7500m for full Greater Ranchi).
         network_type: Type of street network ('drive', 'walk', 'bike').
         cache_path: Optional path to save downloaded data for offline use.
     """
@@ -228,7 +291,7 @@ def get_ranchi_road_network(
     return download_osm_road_network(
         center_lat=23.3699,
         center_lon=85.3253,
-        dist_m=1800,
+        dist_m=7500,
         network_type="drive",
         cache_path=cache_path,
     )

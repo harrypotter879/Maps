@@ -38,8 +38,25 @@ class GeocodedLocation:
         """Return a short readable label."""
         return self.name or self.display_name.split(",")[0]
 
+    def format_display_label(self) -> str:
+        """Format an informative, disambiguated label for search dropdowns."""
+        if self.source == "coordinate":
+            return f"📌 {self.name}"
 
-def _rate_limit_pause(min_interval: float = 1.0) -> None:
+        source_tag = "OSM Nominatim" if self.source == "nominatim" else self.source.title()
+        parts = [p.strip() for p in self.display_name.split(",") if p.strip()]
+        sub = ""
+        if len(parts) > 1:
+            if parts[0].lower() == self.name.lower():
+                sub = ", ".join(parts[1:3])
+            else:
+                sub = ", ".join(parts[:2])
+        if sub:
+            return f"{self.name} — {sub} ({source_tag})"
+        return f"{self.name} ({source_tag})"
+
+
+def _rate_limit_pause(min_interval: float = 0.5) -> None:
     """Ensure at least min_interval seconds between Nominatim calls per usage policy."""
     global _LAST_REQUEST_TIME
     now = time.time()
@@ -72,11 +89,16 @@ def search_local_landmarks(query: str) -> List[GeocodedLocation]:
 
 def search_locations(
     query: str,
-    limit: int = 5,
+    limit: int = 8,
     focus_ranchi: bool = True,
 ) -> List[GeocodedLocation]:
     """
-    Search for locations matching `query` using Nominatim with offline landmark fallback.
+    Search for locations matching `query` using OpenStreetMap Nominatim by default,
+    with comprehensive offline landmark fallback.
+
+    Nominatim results are prioritized first to provide accurate campus/building
+    coordinates and wide geographic coverage. Local landmarks are appended for
+    any items not already represented or as an offline fallback.
 
     Args:
         query: Address, landmark name, or GPS coordinate string.
@@ -84,7 +106,7 @@ def search_locations(
         focus_ranchi: Prioritize or append Ranchi search context if true.
 
     Returns:
-        List of GeocodedLocation suggestions.
+        List of GeocodedLocation suggestions with Nominatim results at top.
     """
     cleaned = query.strip()
     if not cleaned:
@@ -105,18 +127,14 @@ def search_locations(
         ]
 
     # 2. Check local in-memory cache
-    cache_key = cleaned.lower()
+    cache_key = f"{cleaned.lower()}_{limit}_{focus_ranchi}"
     if cache_key in _SEARCH_CACHE:
         return _SEARCH_CACHE[cache_key]
 
-    results: List[GeocodedLocation] = []
+    nominatim_results: List[GeocodedLocation] = []
 
-    # 3. Always check local predefined landmarks first for instant responsiveness
-    local_matches = search_local_landmarks(cleaned)
-    results.extend(local_matches)
-
-    # 4. If query is longer than 2 characters, query OpenStreetMap Nominatim
-    if len(cleaned) >= 3 and len(results) < limit:
+    # 3. Query OpenStreetMap Nominatim FIRST for real, accurate geographic data
+    if len(cleaned) >= 2:
         search_query = cleaned
         if focus_ranchi and "ranchi" not in cleaned.lower():
             search_query = f"{cleaned}, Ranchi, Jharkhand"
@@ -128,9 +146,12 @@ def search_locations(
             "limit": limit,
             "addressdetails": 1,
         }
+        if focus_ranchi:
+            params["viewbox"] = "85.15,23.50,85.50,23.20"
+            params["bounded"] = 0
 
         try:
-            _rate_limit_pause(0.5)
+            _rate_limit_pause(0.3)
             response = requests.get(
                 NOMINATIM_SEARCH_URL,
                 params=params,
@@ -143,15 +164,11 @@ def search_locations(
                     lat = float(item["lat"])
                     lon = float(item["lon"])
                     display_name = item.get("display_name", "")
-                    name = item.get("name") or display_name.split(",")[0]
+                    name = item.get("name") or display_name.split(",")[0].strip()
 
-                    # Deduplicate with existing local results by coordinate proximity (< 100m)
-                    is_dup = any(
-                        abs(r.lat - lat) < 0.001 and abs(r.lon - lon) < 0.001
-                        for r in results
-                    )
-                    if not is_dup:
-                        results.append(
+                    # Deduplicate internal Nominatim results
+                    if not any(abs(r.lat - lat) < 0.0008 and abs(r.lon - lon) < 0.0008 for r in nominatim_results):
+                        nominatim_results.append(
                             GeocodedLocation(
                                 name=name,
                                 display_name=display_name,
@@ -160,13 +177,62 @@ def search_locations(
                                 source="nominatim",
                             )
                         )
+
+            # If 0 results with appended Ranchi, try plain query with viewbox
+            if not nominatim_results and focus_ranchi and search_query != cleaned:
+                params_retry = {
+                    "q": cleaned,
+                    "format": "json",
+                    "limit": limit,
+                    "addressdetails": 1,
+                    "viewbox": "85.15,23.50,85.50,23.20",
+                    "bounded": 0,
+                }
+                res2 = requests.get(
+                    NOMINATIM_SEARCH_URL,
+                    params=params_retry,
+                    headers=headers,
+                    timeout=3.0,
+                )
+                if res2.status_code == 200:
+                    for item in res2.json():
+                        lat = float(item["lat"])
+                        lon = float(item["lon"])
+                        display_name = item.get("display_name", "")
+                        name = item.get("name") or display_name.split(",")[0].strip()
+                        if not any(abs(r.lat - lat) < 0.0008 and abs(r.lon - lon) < 0.0008 for r in nominatim_results):
+                            nominatim_results.append(
+                                GeocodedLocation(
+                                    name=name,
+                                    display_name=display_name,
+                                    lat=lat,
+                                    lon=lon,
+                                    source="nominatim",
+                                )
+                            )
         except (requests.RequestException, ValueError, KeyError):
             # Graceful network degradation: rely on local matches without crashing
             pass
 
-    # Cache and return
-    _SEARCH_CACHE[cache_key] = results[:limit]
-    return results[:limit]
+    # 4. Nominatim results take top priority
+    results: List[GeocodedLocation] = list(nominatim_results)
+
+    # 5. Append local landmark matches for anything not already covered
+    local_matches = search_local_landmarks(cleaned)
+    for lm in local_matches:
+        # Check if already covered by a Nominatim result (proximity < 500m or name match)
+        is_covered = any(
+            (abs(r.lat - lm.lat) < 0.005 and abs(r.lon - lm.lon) < 0.005) or
+            (r.name.lower() == lm.name.lower())
+            for r in nominatim_results
+        )
+        if not is_covered:
+            results.append(lm)
+
+    # Cache and return up to limit
+    final_results = results[:limit]
+    _SEARCH_CACHE[cache_key] = final_results
+    return final_results
 
 
 def reverse_geocode(lat: float, lon: float) -> str:

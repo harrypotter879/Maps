@@ -34,9 +34,10 @@ Both pathfinding algorithms are built from first principles using Python's stand
 ## ✨ Features
 
 - **Interactive Streamlit Web Interface (`app.py`)**:
+  - **My Current Location Feature (`🔵`)**: Visualizes user's current location with a glowing blue dot marker (`🔵 My Current Location`), built-in Leaflet GPS geolocation (`LocateControl`), and single-click routing (`[ 🚩 Route From My Location ]` / `[ 🏁 Route To My Location ]`).
   - **Dedicated Location Search Bar**: Search any address, landmark, or place with real-time autocompletion suggestions.
   - **Instant Map Pinning**: Selecting any search result immediately places a distinctive purple pin (`🔍`) and centers the map on that location.
-  - **Quick Action Endpoints**: Set any searched location as Origin (`🚩`) or Destination (`🏁`) with a single click.
+  - **Quick Action Endpoints**: Set any searched location or current location as Origin (`🚩`) or Destination (`🏁`) with a single click.
   - **Embedded Leaflet Search Widget**: Floating in-map search bar directly inside Folium maps for instant client-side searching and smooth `flyTo` camera panning.
   - **Streamlined User Experience**: Unnecessary algorithmic complexity (algorithm selectors and CPU benchmark numbers) has been removed; the app automatically executes the optimal pathfinding algorithm under the hood.
   - **Real-World Navigation Metrics**: Realistic travel times:
@@ -45,7 +46,7 @@ Both pathfinding algorithms are built from first principles using Python's stand
     - 🚶 **Estimated Walking Time** (based on pedestrian walking pace)
     - 🛣️ **Route Segments & Intersections**
   - **Turn-by-Turn Road Corridor Guidance**: Step-by-step street directions grouping consecutive segments into named corridors.
-  - **Interactive Map Selection**: Click anywhere on the map to set origin or destination pins with automatic reverse geocoding.
+  - **Interactive Map Selection**: Click anywhere on the map to set origin, destination, or current location pins with automatic reverse geocoding.
   - **⇄ Swap Button**: Instant one-click interchange of start and destination points.
 - **Two Pure-Python Algorithms (From Scratch)**:
   - **Dijkstra's Algorithm**: Exhaustive uniform-cost search tracking cumulative distance $g(n)$.
@@ -58,7 +59,7 @@ Both pathfinding algorithms are built from first principles using Python's stand
   - In-memory LRU query cache to eliminate redundant HTTP requests.
   - Graceful degradation: falls back immediately to built-in local landmarks on network timeouts or API limits.
 - **Full Backward Compatibility**: 100% of Stage 1, Stage 2, and Stage 3 CLI commands, fictional network mode, and tests are preserved.
-- **Comprehensive Automated Test Suite**: 68 automated tests verifying graph structures, geocoding resilience, search bar pinning, travel time estimation, map visualization, and CLI commands.
+- **Comprehensive Automated Test Suite**: 73 automated tests verifying graph structures, geocoding resilience, search bar pinning, current location marker, travel time estimation, map visualization, and CLI commands.
 
 ---
 

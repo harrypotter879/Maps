@@ -5,8 +5,10 @@ Built with Streamlit, Folium, and OpenStreetMap (OSMnx & Nominatim).
 Features:
 - Clean startup map with zero pre-loaded directions or cluttered routes
 - Dedicated Top Search Bar with live autocomplete suggestions and instant pin drops
+- Current Location support: glowing blue dot marker (🔵 My Location) and browser GPS locate control
+- Single-click routing from/to My Current Location
 - Sliding 'Go' Directions Drawer triggered by a single button at bottom-left
-- Origin / Destination selection with instant Swap button
+- Origin / Destination selection supporting custom search, landmarks, and map clicks
 - Interactive Folium map with road-geometry routes and click-to-select endpoints
 - User-friendly navigation metrics: Total Distance, Estimated Drive Time, Estimated Walk Time
 - Turn-by-turn guidance corridor itinerary
@@ -27,6 +29,7 @@ from geocoder import search_locations, reverse_geocode, GeocodedLocation
 from map_view import build_folium_map, build_empty_map
 from display import format_distance
 
+MY_LOCATION_LABEL = "🔵 My Current Location"
 
 # Page Configuration - Collapsed sidebar gives full width to the map!
 st.set_page_config(
@@ -72,6 +75,10 @@ def estimate_travel_time(distance_m: float, speed_kmh: float = 30.0) -> str:
 
 def init_session_state() -> None:
     """Initialize Streamlit session state variables."""
+    if "my_location" not in st.session_state:
+        # Default My Current Location set to Kairali School, Ranchi
+        st.session_state.my_location = (23.3191843, 85.2987681, "Kairali School, Ranchi")
+
     if "start_name" not in st.session_state:
         st.session_state.start_name = "Albert Ekka Chowk"
         st.session_state.start_coords = RANCHI_LANDMARKS["Albert Ekka Chowk"]
@@ -111,7 +118,7 @@ def swap_locations() -> None:
 
 
 def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_height: int = 580) -> None:
-    """Helper to render interactive Folium map with current points or clean state."""
+    """Helper to render interactive Folium map with current points, blue dot marker, or clean state."""
     if primary_result and primary_result.found:
         graph = load_cached_osm_network() if is_realworld else load_fictional_network()
         if is_realworld:
@@ -123,18 +130,20 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
                 start_label=st.session_state.start_name,
                 dest_label=st.session_state.dest_name,
                 searched_point=st.session_state.searched_location,
+                current_location=st.session_state.my_location,
                 show_hud=False,  # Keep map canvas clean!
             )
         else:
-            folium_map = build_empty_map(center=(23.3699, 85.3253), zoom=14)
+            folium_map = build_empty_map(center=(23.3191843, 85.2987681), zoom=15)
     else:
-        # Clean start map: No route path, no default start/dest flag markers!
+        # Clean start map: Centered on My Location (Kairali School, Ranchi)!
         folium_map = build_empty_map(
-            center=st.session_state.start_coords,
-            zoom=14,
+            center=(st.session_state.my_location[0], st.session_state.my_location[1]),
+            zoom=15,
             start_point=None,
             dest_point=None,
             searched_point=st.session_state.searched_location,
+            current_location=st.session_state.my_location,
         )
 
     map_data = st_folium(
@@ -149,7 +158,7 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
         click_lat = map_data["last_clicked"]["lat"]
         click_lon = map_data["last_clicked"]["lng"]
         st.info(f"🖱️ **Map Click Detected:** `Latitude: {click_lat:.5f}, Longitude: {click_lon:.5f}`")
-        col_c1, col_c2, _ = st.columns([1.3, 1.3, 2.4])
+        col_c1, col_c2, col_c3 = st.columns([1.3, 1.3, 1.4])
         with col_c1:
             if st.button("📍 Set as Start & Open Go", key="btn_click_start"):
                 st.session_state.start_name = reverse_geocode(click_lat, click_lon)
@@ -163,6 +172,12 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
                 st.session_state.dest_coords = (click_lat, click_lon)
                 st.session_state.show_route_menu = True
                 st.session_state.route_result = None
+                st.rerun()
+        with col_c3:
+            if st.button("🔵 Set as My Location", key="btn_click_my_loc"):
+                loc_label = reverse_geocode(click_lat, click_lon)
+                st.session_state.my_location = (click_lat, click_lon, loc_label)
+                st.session_state.searched_location = st.session_state.my_location
                 st.rerun()
 
 
@@ -202,6 +217,16 @@ def main() -> None:
             font-size: 13.5px;
             color: #166534;
         }
+        .my-loc-bar {
+            background: #EFF6FF;
+            border: 1px solid #BFDBFE;
+            border-radius: 10px;
+            padding: 10px 14px;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
         .route-summary-bar {
             background: #F8FAFC;
             border: 1px solid #E2E8F0;
@@ -232,7 +257,7 @@ def main() -> None:
                 st.session_state.route_result = None
                 st.rerun()
 
-    # ── Top Section: Clean Search Bar ─────────────────────────────────────
+    # ── Top Section: Search Bar & Current Location Controls ──────────────
     if is_realworld:
         col_search_input, col_search_clear = st.columns([5, 1])
         with col_search_input:
@@ -248,14 +273,14 @@ def main() -> None:
                 st.rerun()
 
         if search_val.strip():
-            suggestions = search_locations(search_val.strip(), limit=5)
+            suggestions = search_locations(search_val.strip(), limit=8)
             if suggestions:
                 col_sug_select, col_sug_set_start, col_sug_set_dest = st.columns([3, 1, 1])
                 with col_sug_select:
                     chosen_suggestion = st.selectbox(
                         "Suggestions (select to show on map):",
                         options=suggestions,
-                        format_func=lambda s: f"📍 {s.name} — {s.display_name.split(',')[0]} ({s.source.title()})",
+                        format_func=lambda s: f"📍 {s.format_display_label()}",
                         key="search_suggestion_select",
                     )
                     if chosen_suggestion:
@@ -285,7 +310,91 @@ def main() -> None:
             else:
                 st.warning(f"No locations found matching '{search_val}'. Try another query or GPS coordinates.")
 
-        # Active Location Pin Banner
+        # ── My Current Location Quick Action Bar ──────────────────────────
+        my_lat, my_lon, my_label = st.session_state.my_location
+        col_my_info, col_set_btn, col_route_from_my, col_route_to_my = st.columns([2.6, 1.4, 1.4, 1.4])
+        with col_my_info:
+            st.markdown(
+                f"""
+                <div class="my-loc-bar">
+                    <span><b>🔵 My Location:</b> <b>{my_label}</b> <span style="color:#64748B; font-size:12px;">(`{my_lat:.4f}, {my_lon:.4f}`)</span></span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        with col_set_btn:
+            if st.button("✏️ Change Location", key="btn_toggle_location_picker", use_container_width=True):
+                st.session_state.show_location_picker = not st.session_state.get("show_location_picker", False)
+                st.rerun()
+
+        with col_route_from_my:
+            if st.button("🚩 Route From My Location", key="btn_route_from_my_loc", use_container_width=True):
+                st.session_state.start_name = MY_LOCATION_LABEL
+                st.session_state.start_coords = (my_lat, my_lon)
+                st.session_state.show_route_menu = True
+                st.session_state.route_result = None
+                st.rerun()
+
+        with col_route_to_my:
+            if st.button("🏁 Route To My Location", key="btn_route_to_my_loc", use_container_width=True):
+                st.session_state.dest_name = MY_LOCATION_LABEL
+                st.session_state.dest_coords = (my_lat, my_lon)
+                st.session_state.show_route_menu = True
+                st.session_state.route_result = None
+                st.rerun()
+
+        # Location Picker Panel (Quick Area Select or Address Search)
+        if st.session_state.get("show_location_picker", False):
+            st.info("💡 **Set your location:** Choose your area from the dropdown, search any place, or click anywhere on the map below!")
+            col_preset, col_custom_search = st.columns([1.5, 2.5])
+            with col_preset:
+                preset_choices = ["-- Select your neighborhood / area --"] + sorted(list(RANCHI_LANDMARKS.keys()))
+                chosen_preset = st.selectbox(
+                    "Quick Area Select:",
+                    preset_choices,
+                    key="preset_my_location_select",
+                )
+                if chosen_preset and chosen_preset != "-- Select your neighborhood / area --":
+                    if st.button(f"🔵 Set to {chosen_preset}", key="btn_set_preset_loc", use_container_width=True):
+                        coords = RANCHI_LANDMARKS[chosen_preset]
+                        st.session_state.my_location = (coords[0], coords[1], chosen_preset)
+                        st.session_state.searched_location = st.session_state.my_location
+                        st.session_state.show_location_picker = False
+                        st.toast(f"✅ Set My Location to '{chosen_preset}'!", icon="🔵")
+                        st.rerun()
+
+            with col_custom_search:
+                my_loc_query = st.text_input(
+                    "Or search any custom address or place:",
+                    placeholder="e.g. Tagore Hill, Harmu Housing Colony, Plaza Road, Station Road...",
+                    key="my_loc_search_query",
+                )
+                if my_loc_query.strip():
+                    my_sugs = search_locations(my_loc_query.strip(), limit=5)
+                    if my_sugs:
+                        col_sug_sel, col_sug_btn = st.columns([3, 1])
+                        with col_sug_sel:
+                            chosen_my_sug = st.selectbox(
+                                "Matches found:",
+                                options=my_sugs,
+                                format_func=lambda s: f"📍 {s.format_display_label()}",
+                                key="my_loc_suggestion_select",
+                                label_visibility="collapsed",
+                            )
+                        with col_sug_btn:
+                            if st.button("💾 Save Location", key="btn_save_custom_my_loc", use_container_width=True):
+                                if chosen_my_sug:
+                                    st.session_state.my_location = (
+                                        chosen_my_sug.lat,
+                                        chosen_my_sug.lon,
+                                        chosen_my_sug.name,
+                                    )
+                                    st.session_state.searched_location = st.session_state.my_location
+                                    st.session_state.show_location_picker = False
+                                    st.toast(f"✅ Set My Location to '{chosen_my_sug.name}'!", icon="🔵")
+                                    st.rerun()
+
+        # Active Searched Location Pin Banner
         if st.session_state.searched_location:
             s_lat, s_lon, s_name = st.session_state.searched_location
             st.markdown(
@@ -352,7 +461,7 @@ def main() -> None:
                     st.rerun()
 
             if is_realworld:
-                landmark_options = ["🔍 Search Address / Custom Place..."] + list(RANCHI_LANDMARKS.keys())
+                landmark_options = [MY_LOCATION_LABEL, "🔍 Search Address / Custom Place..."] + list(RANCHI_LANDMARKS.keys())
 
                 # From (Origin)
                 st.markdown("**From (Origin):**")
@@ -363,21 +472,24 @@ def main() -> None:
                     key="drawer_start_select",
                     label_visibility="collapsed",
                 )
-                if start_mode == "🔍 Search Address / Custom Place...":
+                if start_mode == MY_LOCATION_LABEL:
+                    st.session_state.start_name = MY_LOCATION_LABEL
+                    st.session_state.start_coords = (st.session_state.my_location[0], st.session_state.my_location[1])
+                elif start_mode == "🔍 Search Address / Custom Place...":
                     start_query = st.text_input(
                         "Search Origin",
-                        value=st.session_state.start_name if st.session_state.start_name not in RANCHI_LANDMARKS else "",
+                        value=st.session_state.start_name if st.session_state.start_name not in RANCHI_LANDMARKS and st.session_state.start_name != MY_LOCATION_LABEL else "",
                         placeholder="Type address or GPS coordinates...",
                         key="drawer_start_query",
                         label_visibility="collapsed",
                     )
                     if start_query.strip():
-                        sugs = search_locations(start_query.strip(), limit=4)
+                        sugs = search_locations(start_query.strip(), limit=8)
                         if sugs:
                             chosen_s = st.selectbox(
                                 "Matches",
                                 options=sugs,
-                                format_func=lambda s: f"📍 {s.name} ({s.source.title()})",
+                                format_func=lambda s: f"📍 {s.format_display_label()}",
                                 key="drawer_chosen_start_sug",
                                 label_visibility="collapsed",
                             )
@@ -403,21 +515,24 @@ def main() -> None:
                     key="drawer_dest_select",
                     label_visibility="collapsed",
                 )
-                if dest_mode == "🔍 Search Address / Custom Place...":
+                if dest_mode == MY_LOCATION_LABEL:
+                    st.session_state.dest_name = MY_LOCATION_LABEL
+                    st.session_state.dest_coords = (st.session_state.my_location[0], st.session_state.my_location[1])
+                elif dest_mode == "🔍 Search Address / Custom Place...":
                     dest_query = st.text_input(
                         "Search Destination",
-                        value=st.session_state.dest_name if st.session_state.dest_name not in RANCHI_LANDMARKS else "",
+                        value=st.session_state.dest_name if st.session_state.dest_name not in RANCHI_LANDMARKS and st.session_state.dest_name != MY_LOCATION_LABEL else "",
                         placeholder="Type address or GPS coordinates...",
                         key="drawer_dest_query",
                         label_visibility="collapsed",
                     )
                     if dest_query.strip():
-                        sugs = search_locations(dest_query.strip(), limit=4)
+                        sugs = search_locations(dest_query.strip(), limit=8)
                         if sugs:
                             chosen_d = st.selectbox(
                                 "Matches",
                                 options=sugs,
-                                format_func=lambda s: f"🎯 {s.name} ({s.source.title()})",
+                                format_func=lambda s: f"🎯 {s.format_display_label()}",
                                 key="drawer_chosen_dest_sug",
                                 label_visibility="collapsed",
                             )
