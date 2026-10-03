@@ -382,7 +382,7 @@ def build_empty_map(
     dest_point: Optional[Tuple[float, float, str]] = None,
     searched_point: Optional[Tuple[float, float, str]] = None,
     current_location: Optional[Tuple[float, float, str]] = None,
-    include_search_bar: bool = True,
+    include_search_bar: bool = False,
 ) -> Any:
     """
     Construct an initial interactive Folium map centered on Ranchi with optional markers.
@@ -462,7 +462,7 @@ def build_folium_map(
     searched_point: Optional[Tuple[float, float, str]] = None,
     current_location: Optional[Tuple[float, float, str]] = None,
     show_algorithm_stats: bool = False,
-    include_search_bar: bool = True,
+    include_search_bar: bool = False,
     show_hud: bool = True,
 ) -> Any:
     """

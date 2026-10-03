@@ -1025,9 +1025,9 @@ class TestStage4UI(unittest.TestCase):
         self.assertEqual(estimate_travel_time(0.0), "0 mins")
 
     def test_map_search_widget_embedded(self) -> None:
-        """Verify that interactive client-side search widget is injected into Folium maps."""
+        """Verify that interactive client-side search widget is injected into Folium maps when requested."""
         from map_view import build_empty_map
-        m = build_empty_map()
+        m = build_empty_map(include_search_bar=True)
         html_str = m._repr_html_()
         self.assertIn("pf-search-widget", html_str)
         self.assertIn("pf-search-input", html_str)

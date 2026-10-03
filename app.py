@@ -117,6 +117,12 @@ def swap_locations() -> None:
     st.session_state.route_result = None
 
 
+def clear_global_search_pin() -> None:
+    """Callback function to clear search pin and search input before widget instantiation."""
+    st.session_state.searched_location = None
+    st.session_state.global_search_input = ""
+
+
 def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_height: int = 580) -> None:
     """Helper to render interactive Folium map with current points, blue dot marker, or clean state."""
     if primary_result and primary_result.found:
@@ -226,6 +232,10 @@ def main() -> None:
             display: flex;
             align-items: center;
             justify-content: space-between;
+            color: #1E293B !important;
+        }
+        .my-loc-bar span, .my-loc-bar b {
+            color: #1E293B !important;
         }
         .route-summary-bar {
             background: #F8FAFC;
@@ -234,6 +244,7 @@ def main() -> None:
             padding: 12px 18px;
             margin-bottom: 12px;
             box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+            color: #1E293B !important;
         }
         </style>
         """,
@@ -268,9 +279,12 @@ def main() -> None:
                 label_visibility="collapsed",
             )
         with col_search_clear:
-            if st.button("✕ Clear Pin", use_container_width=True, key="btn_clear_search_pin"):
-                st.session_state.searched_location = None
-                st.rerun()
+            st.button(
+                "✕ Clear Pin",
+                use_container_width=True,
+                key="btn_clear_search_pin",
+                on_click=clear_global_search_pin,
+            )
 
         if search_val.strip():
             suggestions = search_locations(search_val.strip(), limit=8)
@@ -317,7 +331,10 @@ def main() -> None:
             st.markdown(
                 f"""
                 <div class="my-loc-bar">
-                    <span><b>🔵 My Location:</b> <b>{my_label}</b> <span style="color:#64748B; font-size:12px;">(`{my_lat:.4f}, {my_lon:.4f}`)</span></span>
+                    <span style="color:#1E293B !important;">
+                        <b style="color:#1E293B !important;">🔵 My Location:</b> <b style="color:#1E3A8A !important;">{my_label}</b>
+                        <span style="color:#475569 !important; font-size:12px;">(`{my_lat:.4f}, {my_lon:.4f}`)</span>
+                    </span>
                 </div>
                 """,
                 unsafe_allow_html=True,
