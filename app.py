@@ -511,20 +511,41 @@ def main() -> None:
                     st.rerun()
 
             if is_realworld:
-                landmark_options = [MY_LOCATION_LABEL, "🔍 Search Address / Custom Place..."] + list(RANCHI_LANDMARKS.keys())
+                # Build Origin options list, preserving custom/searched location if active
+                start_custom_label = f"📍 {st.session_state.start_name}" if (
+                    st.session_state.start_name
+                    and st.session_state.start_name != MY_LOCATION_LABEL
+                    and st.session_state.start_name not in RANCHI_LANDMARKS
+                ) else None
+
+                start_options = [MY_LOCATION_LABEL]
+                if start_custom_label:
+                    start_options.append(start_custom_label)
+                start_options.append("🔍 Search Address / Custom Place...")
+                start_options.extend(RANCHI_LANDMARKS.keys())
 
                 # From (Origin)
                 st.markdown("**From (Origin):**")
+                if start_custom_label:
+                    curr_start_idx = start_options.index(start_custom_label)
+                elif st.session_state.start_name in start_options:
+                    curr_start_idx = start_options.index(st.session_state.start_name)
+                else:
+                    curr_start_idx = 0
+
                 start_mode = st.selectbox(
                     "Origin",
-                    landmark_options,
-                    index=landmark_options.index(st.session_state.start_name) if st.session_state.start_name in landmark_options else 0,
+                    start_options,
+                    index=curr_start_idx,
                     key="drawer_start_select",
                     label_visibility="collapsed",
                 )
                 if start_mode == MY_LOCATION_LABEL:
                     st.session_state.start_name = MY_LOCATION_LABEL
                     st.session_state.start_coords = (st.session_state.my_location[0], st.session_state.my_location[1])
+                elif start_mode == start_custom_label:
+                    # Keep existing custom coordinates and name
+                    pass
                 elif start_mode == "🔍 Search Address / Custom Place...":
                     start_query = st.text_input(
                         "Search Origin",
@@ -556,18 +577,41 @@ def main() -> None:
                 with col_swap:
                     st.button("⇄ Swap Start & Dest", on_click=swap_locations, use_container_width=True)
 
+                # Build Destination options list, preserving custom/searched location if active
+                dest_custom_label = f"🎯 {st.session_state.dest_name}" if (
+                    st.session_state.dest_name
+                    and st.session_state.dest_name != MY_LOCATION_LABEL
+                    and st.session_state.dest_name not in RANCHI_LANDMARKS
+                ) else None
+
+                dest_options = [MY_LOCATION_LABEL]
+                if dest_custom_label:
+                    dest_options.append(dest_custom_label)
+                dest_options.append("🔍 Search Address / Custom Place...")
+                dest_options.extend(RANCHI_LANDMARKS.keys())
+
                 # To (Destination)
                 st.markdown("**To (Destination):**")
+                if dest_custom_label:
+                    curr_dest_idx = dest_options.index(dest_custom_label)
+                elif st.session_state.dest_name in dest_options:
+                    curr_dest_idx = dest_options.index(st.session_state.dest_name)
+                else:
+                    curr_dest_idx = min(3, len(dest_options) - 1)
+
                 dest_mode = st.selectbox(
                     "Destination",
-                    landmark_options,
-                    index=landmark_options.index(st.session_state.dest_name) if st.session_state.dest_name in landmark_options else 0,
+                    dest_options,
+                    index=curr_dest_idx,
                     key="drawer_dest_select",
                     label_visibility="collapsed",
                 )
                 if dest_mode == MY_LOCATION_LABEL:
                     st.session_state.dest_name = MY_LOCATION_LABEL
                     st.session_state.dest_coords = (st.session_state.my_location[0], st.session_state.my_location[1])
+                elif dest_mode == dest_custom_label:
+                    # Keep existing custom coordinates and name
+                    pass
                 elif dest_mode == "🔍 Search Address / Custom Place...":
                     dest_query = st.text_input(
                         "Search Destination",

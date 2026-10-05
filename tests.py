@@ -936,6 +936,49 @@ class TestGeocoder(unittest.TestCase):
         self.assertAlmostEqual(top.lat, 23.3718, delta=0.01)
         self.assertAlmostEqual(top.lon, 85.3243, delta=0.01)
 
+    def test_verified_places_coordinates_accuracy(self) -> None:
+        """Verify pinpoint coordinates for Sadar Hospital, ITI Bus Stand, and BIT Mesra."""
+        from osm_loader import RANCHI_LANDMARKS
+        # Sadar Hospital is on Purulia Road, Konka, between Albert Ekka and St. Xavier's
+        self.assertIn("Sadar Hospital", RANCHI_LANDMARKS)
+        s_lat, s_lon = RANCHI_LANDMARKS["Sadar Hospital"]
+        self.assertAlmostEqual(s_lat, 23.36909, places=3)
+        self.assertAlmostEqual(s_lon, 85.32679, places=3)
+
+        # ITI Bus Stand is at Kaju Bagan Road / Ratu Road, not in Banhaura
+        self.assertIn("ITI Bus Stand", RANCHI_LANDMARKS)
+        i_lat, i_lon = RANCHI_LANDMARKS["ITI Bus Stand"]
+        self.assertAlmostEqual(i_lat, 23.37615, places=3)
+        self.assertAlmostEqual(i_lon, 85.28322, places=3)
+
+        # BIT Mesra campus
+        self.assertIn("BIT Mesra", RANCHI_LANDMARKS)
+        b_lat, b_lon = RANCHI_LANDMARKS["BIT Mesra"]
+        self.assertAlmostEqual(b_lat, 23.41757, delta=0.01)
+        self.assertAlmostEqual(b_lon, 85.43941, delta=0.01)
+
+    def test_full_ranchi_network_covers_bit_mesra(self) -> None:
+        """Verify cached Greater Ranchi network extends to BIT Mesra with accurate snapping and routing."""
+        from osm_loader import get_ranchi_road_network, RANCHI_LANDMARKS
+        from astar import find_shortest_path_astar
+
+        graph = get_ranchi_road_network()
+        # Verify BIT Mesra snaps to road network within 100 meters
+        bit_lat, bit_lon = RANCHI_LANDMARKS["BIT Mesra"]
+        bit_node, bit_snap_dist = graph.find_nearest_node(bit_lat, bit_lon)
+        self.assertLess(bit_snap_dist, 100.0)
+
+        # Verify Kairali School snaps within 150 meters
+        k_lat, k_lon = RANCHI_LANDMARKS["Kairali School"]
+        k_node, k_snap_dist = graph.find_nearest_node(k_lat, k_lon)
+        self.assertLess(k_snap_dist, 150.0)
+
+        # Verify end-to-end routing completes successfully
+        res = find_shortest_path_astar(graph, k_node, bit_node)
+        self.assertTrue(res.found)
+        self.assertGreater(res.total_distance, 18000.0)  # > 18 km route
+        self.assertGreater(len(res.legs), 50)
+
 
 class TestStage4UI(unittest.TestCase):
     """Tests for Stage 4 Streamlit UI helpers and map builders."""

@@ -659,7 +659,7 @@ def build_folium_map(
         first_node_coord = graph.get_node_coords(result.path[0])
         if first_node_coord:
             start_offroad_m = haversine_distance(start_coord, first_node_coord)
-            if 5.0 <= start_offroad_m <= 500.0:
+            if 5.0 <= start_offroad_m <= 1000.0:
                 folium.PolyLine(
                     locations=[[start_coord[0], start_coord[1]], [first_node_coord[0], first_node_coord[1]]],
                     color="#10B981",
@@ -671,7 +671,7 @@ def build_folium_map(
         last_node_coord = graph.get_node_coords(result.path[-1])
         if last_node_coord:
             dest_offroad_m = haversine_distance(dest_coord, last_node_coord)
-            if 5.0 <= dest_offroad_m <= 500.0:
+            if 5.0 <= dest_offroad_m <= 1000.0:
                 folium.PolyLine(
                     locations=[[last_node_coord[0], last_node_coord[1]], [dest_coord[0], dest_coord[1]]],
                     color="#EF4444",
