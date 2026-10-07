@@ -1,162 +1,170 @@
-"""
-Traffic Simulation module for PathFinder.
+"""Deterministic, modelled traffic and travel-time estimates for Ranchi roads.
 
-Idea (kept deliberately simple):
-
-    Road -> distance -> traffic level -> traffic-adjusted cost -> Dijkstra/A* -> route
-
-* The PHYSICAL distance of a road (Edge.weight) is never changed.
-* A traffic level (low / medium / high) is worked out for every road from
-  (a) how important the road is and (b) the selected simulation mode.
-* routing cost = distance x multiplier. Only the routing algorithm uses it.
-
-This is a SIMULATION for demonstration. It is NOT real-time traffic data.
-
-Nothing is stored on the graph: the traffic level is a pure function of the
-road and the mode, so results are repeatable (no randomness) and the shared
-road network is never modified.
+OSM highway tags are used when present. The bundled Ranchi cache predates
+highway-tag storage, so its unclassified roads use a conservative documented
+fallback based on recognizable road names and an urban default. This module
+never changes physical edge lengths and does not represent live traffic.
 """
 
 from __future__ import annotations
 
 import re
-import zlib
 from dataclasses import dataclass
-from typing import Callable, Dict, Iterator, List, Optional, Tuple
+from datetime import time
+from typing import Callable, Dict, List, Optional, Tuple
 
 from graph import Edge, Graph
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Configuration (the only place where traffic numbers live)
-# ─────────────────────────────────────────────────────────────────────────────
-
 LOW, MEDIUM, HIGH = "low", "medium", "high"
+TRAFFIC_COLORS = {LOW: "#16A34A", MEDIUM: "#EAB308", HIGH: "#DC2626"}
+TRAFFIC_ICONS = {LOW: "🟢", MEDIUM: "🟡", HIGH: "🔴"}
 
-TRAFFIC_MULTIPLIERS: Dict[str, float] = {LOW: 1.0, MEDIUM: 1.5, HIGH: 2.5}
-DEFAULT_TRAFFIC_LEVEL = LOW  # used whenever a level is missing / invalid
-
-TRAFFIC_COLORS: Dict[str, str] = {LOW: "#16A34A", MEDIUM: "#F59E0B", HIGH: "#DC2626"}
-TRAFFIC_ICONS: Dict[str, str] = {LOW: "🟢", MEDIUM: "🟡", HIGH: "🔴"}
-
-# Simulation modes shown in the UI
-NORMAL = "normal"
-RUSH_HOUR = "rush_hour"
-HEAVY_TRAFFIC = "heavy_traffic"
-
-TRAFFIC_MODE_LABELS: Dict[str, str] = {
-    NORMAL: "Normal",
-    RUSH_HOUR: "Rush Hour",
-    HEAVY_TRAFFIC: "Heavy Traffic",
+SHORTEST_DISTANCE = "shortest_distance"
+TRAFFIC_AWARE = "traffic_aware"
+TRAFFIC_MODE_LABELS = {
+    SHORTEST_DISTANCE: "Shortest Distance",
+    TRAFFIC_AWARE: "Traffic-Aware",
 }
 
-# Road classes (guessed, because the map data has no road-type tag)
-MAIN, SECONDARY, LOCAL = "main", "secondary", "local"
+# Model assumptions in km/h, not posted speed limits or measured Ranchi speeds.
+BASE_SPEEDS_KMH: Dict[str, float] = {
+    "motorway": 80.0, "trunk": 60.0, "primary": 45.0,
+    "secondary": 35.0, "tertiary": 30.0, "unclassified": 25.0,
+    "residential": 20.0, "living_street": 12.0, "service": 15.0,
+    "road": 20.0, "unknown": 25.0,
+}
+TRAFFIC_SPEED_FACTORS = {LOW: 1.0, MEDIUM: 0.7, HIGH: 0.4}
+MAX_MODELED_SPEED_KMH = max(BASE_SPEEDS_KMH.values())
 
-# Named roads containing one of these words are treated as main roads.
-MAIN_ROAD_KEYWORDS = (
-    "highway", "expressway", "bypass", "ring road", "national", "main",
-    "airport", "parkway", "interstate", "route", "coast",
+# Modeled periods are adjustable assumptions, not observations.
+TIME_PERIODS = (
+    (time(6, 0), time(7, 30), "early_morning"),
+    (time(7, 30), time(10, 0), "morning_peak"),
+    (time(10, 0), time(16, 0), "midday"),
+    (time(16, 0), time(20, 0), "evening_peak"),
 )
-# Whole-word match, plus highway numbers such as "NH33" or "I-10".
-_MAIN_ROAD_PATTERN = re.compile(
-    r"\b(?:" + "|".join(MAIN_ROAD_KEYWORDS) + r")\b|\bnh\s*-?\d+|\bi-\d+"
-)
-
-# Unnamed road segments at least this long (same unit as Edge.weight,
-# metres for the Ranchi map) count as secondary roads; shorter ones are local.
-SECONDARY_MIN_LENGTH = 100.0
-
-# What traffic level each (mode, road class) gets.
-# A value that is a tuple means "split deterministically between the two".
-TRAFFIC_MODE_RULES: Dict[str, Dict[str, object]] = {
-    NORMAL:        {MAIN: MEDIUM,          SECONDARY: LOW,              LOCAL: LOW},
-    RUSH_HOUR:     {MAIN: HIGH,            SECONDARY: MEDIUM,           LOCAL: LOW},
-    HEAVY_TRAFFIC: {MAIN: HIGH,            SECONDARY: (HIGH, MEDIUM),   LOCAL: MEDIUM},
+PERIOD_LABELS = {
+    "early_morning": "Early morning", "morning_peak": "Morning peak",
+    "midday": "Midday", "evening_peak": "Evening peak", "night": "Night",
 }
 
-# Assumed speed ONLY for the clearly-labelled simulated time estimate.
-SIMULATED_DRIVE_SPEED_KMH = 30.0
+# Busy periods affect major roads more; local residential streets are less
+# affected. Each road gets the same result for the same class and departure.
+PERIOD_LEVELS = {
+    "early_morning": {"major": LOW, "secondary": LOW, "local": LOW},
+    "morning_peak": {"major": HIGH, "secondary": MEDIUM, "local": LOW},
+    "midday": {"major": MEDIUM, "secondary": LOW, "local": LOW},
+    "evening_peak": {"major": HIGH, "secondary": MEDIUM, "local": LOW},
+    "night": {"major": LOW, "secondary": LOW, "local": LOW},
+}
 
-# A cost function maps (from_node, edge) -> routing cost
+_MAJOR_NAME = re.compile(r"\b(?:nh\s*\d+|national highway|highway|expressway|bypass|ring road|main road)\b", re.I)
+_LOCAL_NAME = re.compile(r"\b(?:lane|service road|living street|colony road)\b", re.I)
+_HIGHWAY_SPEED_CLASS = {
+    "motorway": "motorway", "motorway_link": "motorway",
+    "trunk": "trunk", "trunk_link": "trunk",
+    "primary": "primary", "primary_link": "primary",
+    "secondary": "secondary", "secondary_link": "secondary",
+    "tertiary": "tertiary", "tertiary_link": "tertiary",
+    "unclassified": "unclassified", "residential": "residential",
+    "living_street": "living_street", "service": "service",
+    "road": "road",
+}
+
 CostFunction = Callable[[str, Edge], float]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Core calculations
-# ─────────────────────────────────────────────────────────────────────────────
-
-def normalize_traffic_level(level: Optional[str]) -> str:
-    """Return a valid level; missing or unknown values become LOW."""
-    key = str(level).strip().lower() if level is not None else ""
-    return key if key in TRAFFIC_MULTIPLIERS else DEFAULT_TRAFFIC_LEVEL
-
-
-def get_traffic_multiplier(level: Optional[str]) -> float:
-    """Multiplier for a traffic level (unknown / missing -> LOW = 1.0)."""
-    return TRAFFIC_MULTIPLIERS[normalize_traffic_level(level)]
+def normalize_departure_time(value: time | str | None) -> time:
+    """Accept a ``datetime.time`` or HH:MM string; default to 08:30."""
+    if isinstance(value, time):
+        return value.replace(second=0, microsecond=0)
+    if isinstance(value, str):
+        try:
+            hour, minute = value.strip().split(":", 1)
+            return time(int(hour), int(minute))
+        except (ValueError, TypeError):
+            pass
+    return time(8, 30)
 
 
-def calculate_traffic_cost(distance: float, level: Optional[str]) -> float:
-    """routing cost = physical distance x traffic multiplier."""
-    return distance * get_traffic_multiplier(level)
+def get_traffic_period(departure_time: time | str | None) -> str:
+    departure = normalize_departure_time(departure_time)
+    for start, end, period in TIME_PERIODS:
+        if start <= departure < end:
+            return period
+    return "night"
 
 
-def is_valid_traffic_mode(mode: Optional[str]) -> bool:
-    return mode in TRAFFIC_MODE_RULES
+def classify_road(edge: Edge) -> str:
+    """Return the OSM highway class, with a name-only fallback for old cache."""
+    tag = (edge.highway or "").strip().lower()
+    # OSM can provide a list-like value in custom caches.
+    tag = tag.split(",", 1)[0].strip()
+    if tag in _HIGHWAY_SPEED_CLASS:
+        return _HIGHWAY_SPEED_CLASS[tag]
+    if tag:
+        return "unknown"
+    name = edge.road_name or ""
+    if _MAJOR_NAME.search(name):
+        return "primary"
+    if _LOCAL_NAME.search(name):
+        return "service"
+    # Legacy cache has no highway tag. A named connector gets a modest
+    # secondary-road assumption; unnamed segments use the urban default.
+    if name.strip():
+        return "tertiary"
+    return "unknown"
 
 
-def classify_road(road_name: str, distance: float) -> str:
-    """Guess MAIN / SECONDARY / LOCAL from the road name and segment length."""
-    name = (road_name or "").strip().lower()
-    if name:
-        return MAIN if _MAIN_ROAD_PATTERN.search(name) else SECONDARY
-    return SECONDARY if distance >= SECONDARY_MIN_LENGTH else LOCAL
+def road_traffic_group(edge: Edge) -> str:
+    road_class = classify_road(edge)
+    if road_class in {"motorway", "trunk", "primary"}:
+        return "major"
+    if road_class in {"secondary", "tertiary", "unclassified", "road"}:
+        return "secondary"
+    return "local"
 
 
-def _stable_split(u: str, v: str) -> int:
-    """Repeatable 0/1 value for a road (same for both directions)."""
-    a, b = sorted((str(u), str(v)))
-    return zlib.crc32(f"{a}|{b}".encode("utf-8")) & 1
+def get_traffic_level(edge: Edge, departure_time: time | str | None) -> str:
+    period = get_traffic_period(departure_time)
+    group = road_traffic_group(edge)
+    return PERIOD_LEVELS[period][group]
 
 
-def get_traffic_level(u: str, edge: Edge, mode: Optional[str]) -> str:
-    """Traffic level of one road in a given mode. Never raises."""
-    rules = TRAFFIC_MODE_RULES.get(mode) if mode else None
-    if rules is None:
-        return DEFAULT_TRAFFIC_LEVEL
-    level = rules.get(classify_road(edge.road_name, edge.weight), DEFAULT_TRAFFIC_LEVEL)
-    if isinstance(level, tuple):
-        level = level[_stable_split(u, edge.destination)]
-    return normalize_traffic_level(level)  # type: ignore[arg-type]
+def estimated_speed_kmh(edge: Edge, departure_time: time | str | None) -> float:
+    road_class = classify_road(edge)
+    base_speed = BASE_SPEEDS_KMH.get(road_class, BASE_SPEEDS_KMH["unknown"])
+    level = get_traffic_level(edge, departure_time)
+    return base_speed * TRAFFIC_SPEED_FACTORS[level]
 
 
-def apply_traffic_mode(mode: Optional[str]) -> Optional[CostFunction]:
-    """
-    Turn a simulation mode into a cost function for Dijkstra / A*.
+def estimated_travel_time_seconds(edge: Edge, departure_time: time | str | None) -> float:
+    """Estimated seconds for this edge; ``edge.weight`` remains physical meters."""
+    if edge.weight <= 0:
+        return 0.0
+    return edge.weight * 3.6 / estimated_speed_kmh(edge, departure_time)
 
-    Returns None for "no traffic" (None / unknown mode), which means the
-    algorithms use plain distance - i.e. Normal Routing.
-    """
-    if not is_valid_traffic_mode(mode):
+
+def apply_traffic_mode(mode: Optional[str], departure_time: time | str | None = None) -> Optional[CostFunction]:
+    """Return edge travel time in seconds for traffic-aware routing."""
+    if mode != TRAFFIC_AWARE:
         return None
+    departure = normalize_departure_time(departure_time)
 
-    def cost(u: str, edge: Edge) -> float:
-        return calculate_traffic_cost(edge.weight, get_traffic_level(u, edge, mode))
+    def cost(_u: str, edge: Edge) -> float:
+        return estimated_travel_time_seconds(edge, departure)
 
+    # A* can safely use straight-line distance / maximum possible speed.
+    cost.heuristic_multiplier = 3.6 / MAX_MODELED_SPEED_KMH  # type: ignore[attr-defined]
     return cost
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Route analysis (used by the UI)
-# ─────────────────────────────────────────────────────────────────────────────
-
 @dataclass(frozen=True)
 class RouteTrafficInfo:
-    """Traffic summary of one route under one mode."""
     mode: str
-    distance: float          # physical distance
-    traffic_cost: float      # traffic-adjusted routing cost
+    departure_time: time
+    distance: float
+    travel_time_seconds: float
     level_counts: Dict[str, int]
     level_distance: Dict[str, float]
 
@@ -165,68 +173,46 @@ class RouteTrafficInfo:
         return self.level_counts.get(HIGH, 0)
 
     @property
+    def estimated_speed_kmh(self) -> float:
+        if self.travel_time_seconds <= 0:
+            return 0.0
+        return self.distance * 3.6 / self.travel_time_seconds
+
+    @property
     def impact(self) -> str:
-        """Overall traffic impact label (not a time estimate)."""
-        if self.distance <= 0:
+        total = sum(self.level_counts.values())
+        if not total:
             return LOW
-        extra = self.traffic_cost / self.distance
-        if extra >= 1.9:
+        if self.level_counts[HIGH] / total >= 0.35:
             return HIGH
-        if extra >= 1.25:
+        if self.level_counts[MEDIUM] + self.level_counts[HIGH] > 0:
             return MEDIUM
         return LOW
 
 
-def analyse_route(graph: Graph, path: List[str], mode: Optional[str]) -> Optional[RouteTrafficInfo]:
-    """Summarise traffic along a node path. Returns None if mode is off."""
-    if not is_valid_traffic_mode(mode):
+def analyse_route(graph: Graph, path: List[str], mode: Optional[str], departure_time: time | str | None = None) -> Optional[RouteTrafficInfo]:
+    if mode != TRAFFIC_AWARE:
         return None
+    departure = normalize_departure_time(departure_time)
     counts = {LOW: 0, MEDIUM: 0, HIGH: 0}
     dists = {LOW: 0.0, MEDIUM: 0.0, HIGH: 0.0}
-    total_dist = 0.0
-    total_cost = 0.0
+    total_dist = total_time = 0.0
     for u, v in zip(path[:-1], path[1:]):
         edge = graph.get_edge(u, v)
         if edge is None:
             continue
-        level = get_traffic_level(u, edge, mode)
+        level = get_traffic_level(edge, departure)
         counts[level] += 1
         dists[level] += edge.weight
         total_dist += edge.weight
-        total_cost += calculate_traffic_cost(edge.weight, level)
-    return RouteTrafficInfo(mode, total_dist, total_cost, counts, dists)
+        total_time += estimated_travel_time_seconds(edge, departure)
+    return RouteTrafficInfo(mode, departure, total_dist, total_time, counts, dists)
 
 
-def simulated_drive_minutes(distance_m: float, info: Optional[RouteTrafficInfo]) -> float:
-    """
-    Simulated drive time in minutes using the documented assumed speed
-    (SIMULATED_DRIVE_SPEED_KMH), slowed by the traffic cost ratio.
-    Always label this as 'Estimated / Simulated'.
-    """
-    if distance_m <= 0:
-        return 0.0
-    base = (distance_m / 1000.0) / SIMULATED_DRIVE_SPEED_KMH * 60.0
-    ratio = (info.traffic_cost / info.distance) if info and info.distance > 0 else 1.0
-    return base * ratio
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Map overlay data
-# ─────────────────────────────────────────────────────────────────────────────
-
-def iter_traffic_segments(
-    graph: Graph,
-    mode: Optional[str],
-    bounds: Tuple[float, float, float, float],
-    max_segments: int = 6000,
-) -> Dict[str, List[List[List[float]]]]:
-    """
-    Collect road polylines inside bounds=(min_lat, min_lon, max_lat, max_lon),
-    grouped by traffic level. At most `max_segments` are returned, with the
-    most congested roads kept first so the map stays fast.
-    """
+def iter_traffic_segments(graph: Graph, mode: Optional[str], departure_time: time | str | None,
+                          bounds: Tuple[float, float, float, float], max_segments: int = 6000) -> Dict[str, List[List[List[float]]]]:
     groups: Dict[str, List[List[List[float]]]] = {HIGH: [], MEDIUM: [], LOW: []}
-    if not is_valid_traffic_mode(mode):
+    if mode != TRAFFIC_AWARE:
         return groups
     min_lat, min_lon, max_lat, max_lon = bounds
     seen = set()
@@ -246,8 +232,7 @@ def iter_traffic_segments(
                 if d is None:
                     continue
                 points = [[c[0], c[1]], [d[0], d[1]]]
-            groups[get_traffic_level(u, edge, mode)].append(points)
-
+            groups[get_traffic_level(edge, departure_time)].append(points)
     budget = max_segments
     for level in (HIGH, MEDIUM, LOW):
         groups[level] = groups[level][:budget]

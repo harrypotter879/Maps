@@ -20,6 +20,7 @@ class Edge:
     weight: float
     road_name: str = ""
     geometry: Optional[Tuple[Tuple[float, float], ...]] = None
+    highway: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.weight < 0:
@@ -69,6 +70,7 @@ class Graph:
         bidirectional: bool = True,
         road_name: str = "",
         geometry: Optional[List[Tuple[float, float]]] = None,
+        highway: Optional[str] = None,
     ) -> None:
         """
         Add a weighted edge between nodes u and v.
@@ -90,11 +92,11 @@ class Graph:
         geom_tuple = tuple(geometry) if geometry else None
 
         # Check if an edge already exists from u to v; update if new weight is smaller
-        self._add_or_update_edge(u, v, weight, road_name, geom_tuple)
+        self._add_or_update_edge(u, v, weight, road_name, geom_tuple, highway)
 
         if bidirectional and u != v:
             rev_geom = tuple(reversed(geometry)) if geometry else None
-            self._add_or_update_edge(v, u, weight, road_name, rev_geom)
+            self._add_or_update_edge(v, u, weight, road_name, rev_geom, highway)
 
     def _add_or_update_edge(
         self,
@@ -103,6 +105,7 @@ class Graph:
         weight: float,
         road_name: str,
         geometry: Optional[Tuple[Tuple[float, float], ...]] = None,
+        highway: Optional[str] = None,
     ) -> None:
         """Helper to add an edge or update it if a cheaper edge is added."""
         edges = self._adjacency_list[u]
@@ -115,6 +118,7 @@ class Graph:
                         weight=weight,
                         road_name=road_name,
                         geometry=geometry,
+                        highway=highway,
                     )
                 return
         edges.append(
@@ -123,6 +127,7 @@ class Graph:
                 weight=weight,
                 road_name=road_name,
                 geometry=geometry,
+                highway=highway,
             )
         )
 

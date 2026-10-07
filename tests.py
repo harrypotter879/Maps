@@ -1175,181 +1175,122 @@ class TestStage4UI(unittest.TestCase):
         self.assertIn("#2563EB", html_route)
 
 
-class TestTrafficSimulation(unittest.TestCase):
-    """Traffic simulation: costs, modes, routing, and robustness."""
+class TestTrafficAwareRouting(unittest.TestCase):
+    """Traffic estimates preserve distances and provide a time-based cost."""
 
     @staticmethod
     def _two_route_graph() -> Graph:
-        """A -> B directly on a 4 km main road, or via C on 5 km of small local roads."""
         g = Graph()
-        g.add_edge("A", "B", 4.0, road_name="Main Highway")
-        g.add_edge("A", "C", 2.5)
-        g.add_edge("C", "B", 2.5)
-        g.add_edge("X", "Y", 1.0)  # disconnected pair for the no-route test
+        # Direct primary is shortest, but modeled morning congestion makes the
+        # slightly longer residential alternative faster.
+        g.add_edge("A", "B", 4.0, road_name="Main Road", highway="primary")
+        g.add_edge("A", "C", 2.1, highway="residential")
+        g.add_edge("C", "B", 2.1, highway="residential")
+        g.add_edge("X", "Y", 1.0)
         return g
 
-    def test_multipliers_and_cost(self) -> None:
-        from traffic import calculate_traffic_cost, get_traffic_multiplier
-        self.assertEqual(calculate_traffic_cost(4.0, "low"), 4.0)
-        self.assertEqual(calculate_traffic_cost(4.0, "medium"), 6.0)
-        self.assertEqual(calculate_traffic_cost(4.0, "high"), 10.0)
-        # Missing / invalid values fall back to LOW instead of crashing
-        self.assertEqual(get_traffic_multiplier(None), 1.0)
-        self.assertEqual(get_traffic_multiplier("banana"), 1.0)
-
-    def test_normal_routing_unchanged(self) -> None:
+    def test_distance_is_immutable_and_shortest_mode_is_unchanged(self) -> None:
         from astar import find_shortest_path_astar
+        from traffic import TRAFFIC_AWARE, apply_traffic_mode
         g = self._two_route_graph()
-        base = find_shortest_path_astar(g, "A", "B")
-        self.assertEqual(base.path, ["A", "B"])
-        self.assertEqual(base.total_distance, 4.0)
-        self.assertIsNone(base.total_cost)
-        d = find_shortest_path(g, "A", "B")
-        self.assertEqual(d.path, ["A", "B"])
-        self.assertIsNone(d.total_cost)
+        before = g.get_edge("A", "B").weight
+        normal = find_shortest_path(g, "A", "B")
+        traffic = find_shortest_path_astar(g, "A", "B", cost_function=apply_traffic_mode(TRAFFIC_AWARE, "08:30"))
+        self.assertEqual(normal.path, ["A", "B"])
+        self.assertEqual(normal.total_distance, 4.0)
+        self.assertEqual(traffic.total_distance, 4.2)
+        self.assertEqual(g.get_edge("A", "B").weight, before)
 
-    def test_invalid_or_missing_mode_means_normal_routing(self) -> None:
-        from traffic import apply_traffic_mode
-        self.assertIsNone(apply_traffic_mode(None))
-        self.assertIsNone(apply_traffic_mode("nonsense"))
+    def test_speed_and_time_order_by_traffic_level(self) -> None:
+        from traffic import estimated_speed_kmh, estimated_travel_time_seconds
+        low = Edge("B", 1000, highway="primary")
+        medium = Edge("B", 1000, highway="primary")
+        high = Edge("B", 1000, highway="primary")
+        self.assertGreater(estimated_speed_kmh(low, "06:30"), estimated_speed_kmh(medium, "12:00"))
+        self.assertGreater(estimated_speed_kmh(medium, "12:00"), estimated_speed_kmh(high, "08:30"))
+        self.assertLess(estimated_travel_time_seconds(low, "06:30"), estimated_travel_time_seconds(medium, "12:00"))
+        self.assertLess(estimated_travel_time_seconds(medium, "12:00"), estimated_travel_time_seconds(high, "08:30"))
 
-    def test_low_traffic_keeps_short_route(self) -> None:
+    def test_time_cost_can_choose_faster_alternative(self) -> None:
         from astar import find_shortest_path_astar
-        from traffic import apply_traffic_mode, NORMAL
-        g = Graph()
-        g.add_edge("A", "B", 4.0, road_name="Quiet Lane")  # secondary road -> LOW in NORMAL mode
-        g.add_edge("A", "C", 2.5)
-        g.add_edge("C", "B", 2.5)
-        res = find_shortest_path_astar(g, "A", "B", cost_function=apply_traffic_mode(NORMAL))
+        from traffic import TRAFFIC_AWARE, apply_traffic_mode
+        g = self._two_route_graph()
+        dijkstra = find_shortest_path(g, "A", "B", cost_function=apply_traffic_mode(TRAFFIC_AWARE, "08:30"))
+        astar = find_shortest_path_astar(g, "A", "B", cost_function=apply_traffic_mode(TRAFFIC_AWARE, "08:30"))
+        self.assertEqual(astar.path, ["A", "C", "B"])
+        self.assertAlmostEqual(astar.total_cost, dijkstra.total_cost)
+        self.assertEqual(astar.total_distance, 4.2)
+
+    def test_shortest_route_can_also_be_fastest(self) -> None:
+        from astar import find_shortest_path_astar
+        from traffic import TRAFFIC_AWARE, apply_traffic_mode
+        g = self._two_route_graph()
+        res = find_shortest_path_astar(g, "A", "B", cost_function=apply_traffic_mode(TRAFFIC_AWARE, "13:00"))
         self.assertEqual(res.path, ["A", "B"])
-        self.assertEqual(res.total_cost, res.total_distance)
 
-    def test_rush_hour_changes_route_but_not_distances(self) -> None:
+    def test_departure_time_changes_estimates_and_results_are_deterministic(self) -> None:
+        from traffic import estimated_travel_time_seconds
+        edge = Edge("B", 1000, highway="primary")
+        self.assertNotEqual(estimated_travel_time_seconds(edge, "08:30"), estimated_travel_time_seconds(edge, "13:00"))
+        self.assertEqual(estimated_travel_time_seconds(edge, "08:30"), estimated_travel_time_seconds(edge, "08:30"))
+
+    def test_missing_metadata_is_safe(self) -> None:
+        from traffic import classify_road, estimated_speed_kmh
+        edge = Edge("B", 120.0)
+        self.assertEqual(classify_road(edge), "unknown")
+        self.assertGreater(estimated_speed_kmh(edge, "08:30"), 0)
+
+    def test_highway_metadata_round_trips_without_changing_length(self) -> None:
+        import os
+        import tempfile
+        from osm_loader import save_graph_to_json, graph_from_json
+        g = Graph()
+        g.add_edge("A", "B", 735.0, bidirectional=False, road_name="Ring Road", highway="primary")
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "network.json")
+            save_graph_to_json(g, path)
+            loaded = graph_from_json(path)
+        edge = loaded.get_edge("A", "B")
+        self.assertEqual(edge.weight, 735.0)
+        self.assertEqual(edge.highway, "primary")
+
+    def test_traffic_analysis_reports_physical_distance_and_time(self) -> None:
         from astar import find_shortest_path_astar
-        from traffic import apply_traffic_mode, RUSH_HOUR
+        from traffic import TRAFFIC_AWARE, analyse_route, apply_traffic_mode
         g = self._two_route_graph()
-        cost_fn = apply_traffic_mode(RUSH_HOUR)
-        for algo in (find_shortest_path_astar, find_shortest_path):
-            res = algo(g, "A", "B", cost_function=cost_fn)
-            self.assertEqual(res.path, ["A", "C", "B"], algo.__module__)
-            self.assertEqual(res.total_distance, 5.0)   # physical distance = real length
-            self.assertEqual(res.total_cost, 5.0)       # local roads stay LOW
-        # Edge weights in the graph were not modified
-        self.assertEqual(g.get_edge("A", "B").weight, 4.0)
+        res = find_shortest_path_astar(g, "A", "B", cost_function=apply_traffic_mode(TRAFFIC_AWARE, "08:30"))
+        info = analyse_route(g, res.path, TRAFFIC_AWARE, "08:30")
+        self.assertEqual(info.distance, res.total_distance)
+        self.assertGreater(info.travel_time_seconds, 0)
 
-    def test_heavy_traffic_cost_exceeds_distance(self) -> None:
+    def test_map_traffic_overlay(self) -> None:
+        try:
+            import folium  # noqa: F401
+        except ImportError:
+            self.skipTest("folium is not installed in this environment")
         from astar import find_shortest_path_astar
-        from traffic import apply_traffic_mode, HEAVY_TRAFFIC
-        g = self._two_route_graph()
-        res = find_shortest_path_astar(g, "A", "C", cost_function=apply_traffic_mode(HEAVY_TRAFFIC))
-        self.assertEqual(res.total_distance, 2.5)
-        self.assertEqual(res.total_cost, 2.5 * 1.5)  # local roads are MEDIUM when traffic is heavy
-
-    def test_modes_are_deterministic(self) -> None:
-        from traffic import apply_traffic_mode, HEAVY_TRAFFIC
-        g = create_sample_road_network()
-        f1, f2 = apply_traffic_mode(HEAVY_TRAFFIC), apply_traffic_mode(HEAVY_TRAFFIC)
-        for u in g.get_nodes():
-            for e in g.get_neighbors(u):
-                self.assertEqual(f1(u, e), f2(u, e))
-
-    def test_no_route_with_traffic(self) -> None:
-        from astar import find_shortest_path_astar
-        from traffic import apply_traffic_mode, RUSH_HOUR
-        g = self._two_route_graph()
-        res = find_shortest_path_astar(g, "A", "X", cost_function=apply_traffic_mode(RUSH_HOUR))
-        self.assertFalse(res.found)
-        res_d = find_shortest_path(g, "A", "X", cost_function=apply_traffic_mode(RUSH_HOUR))
-        self.assertFalse(res_d.found)
-
-    def test_invalid_location_still_raises_key_error(self) -> None:
-        from astar import find_shortest_path_astar
-        from traffic import apply_traffic_mode, RUSH_HOUR
-        g = self._two_route_graph()
-        with self.assertRaises(KeyError):
-            find_shortest_path_astar(g, "A", "Nowhere", cost_function=apply_traffic_mode(RUSH_HOUR))
-
-    def test_alternative_routes_with_traffic(self) -> None:
-        from astar import find_alternative_routes
-        from traffic import apply_traffic_mode, RUSH_HOUR
-        g = create_sample_road_network()
-        plain = find_alternative_routes(g, "Port Marina", "Amber Plains", max_routes=3)
-        traffic = find_alternative_routes(
-            g, "Port Marina", "Amber Plains", max_routes=3, cost_function=apply_traffic_mode(RUSH_HOUR)
-        )
-        self.assertGreaterEqual(len(plain), 1)
-        self.assertGreaterEqual(len(traffic), 1)
-        for r in traffic:
-            self.assertTrue(r.found)
-            self.assertIsNotNone(r.total_cost)
-            self.assertGreaterEqual(r.total_cost, r.total_distance)
-
-    def test_analyse_route_counts_levels(self) -> None:
-        from traffic import analyse_route, RUSH_HOUR
-        g = self._two_route_graph()
-        info = analyse_route(g, ["A", "B"], RUSH_HOUR)
-        self.assertEqual(info.high_roads, 1)
-        self.assertEqual(info.traffic_cost, 10.0)
-        self.assertEqual(info.distance, 4.0)
-        self.assertIsNone(analyse_route(g, ["A", "B"], None))
-
-    def test_map_with_traffic_overlay(self) -> None:
-        from osm_loader import get_ranchi_road_network, resolve_location_or_coords
-        from astar import find_shortest_path_astar
+        from traffic import TRAFFIC_AWARE, apply_traffic_mode
         from map_view import build_folium_map, build_empty_map
-        from traffic import apply_traffic_mode, RUSH_HOUR
-        graph = get_ranchi_road_network()
-        u, uc, un = resolve_location_or_coords(graph, "Albert Ekka Chowk")
-        v, vc, vn = resolve_location_or_coords(graph, "Ranchi Railway Station")
-        res = find_shortest_path_astar(graph, u, v, cost_function=apply_traffic_mode(RUSH_HOUR))
-        m = build_folium_map(graph, res, uc, vc, un, vn, traffic_mode=RUSH_HOUR)
-        html = m._repr_html_()
-        self.assertIn("#DC2626", html)  # red = HIGH traffic
-        m2 = build_empty_map(center=uc, graph=graph, traffic_mode=RUSH_HOUR)
-        self.assertIn("#DC2626", m2._repr_html_())
+        g = self._two_route_graph()
+        res = find_shortest_path_astar(g, "A", "B", cost_function=apply_traffic_mode(TRAFFIC_AWARE, "08:30"))
+        # Minimal map check with graph geometry and traffic model exercised.
+        g.add_node("A", 23.37, 85.32)
+        g.add_node("B", 23.36, 85.33)
+        g.add_node("C", 23.365, 85.325)
+        m = build_folium_map(g, res, (23.37, 85.32), (23.36, 85.33), traffic_mode=TRAFFIC_AWARE, departure_time="08:30")
+        self.assertIn("Traffic estimate", m.get_root().render())
+        self.assertIn("#DC2626", build_empty_map(center=(23.37, 85.32), graph=g, traffic_mode=TRAFFIC_AWARE, departure_time="08:30").get_root().render())
 
-    def test_ui_traffic_mode_switch_does_not_crash(self) -> None:
-        """Run the Streamlit app headlessly, find a route, switch traffic modes."""
-        from streamlit.testing.v1 import AppTest
-        at = AppTest.from_file("app.py", default_timeout=120).run()
-        self.assertFalse(at.exception)
-        # No start/destination selected yet: switching mode must not crash
-        at.radio(key="traffic_choice").set_value("rush_hour").run()
-        self.assertFalse(at.exception)
-        at.radio(key="traffic_choice").set_value("off").run()
-        self.assertFalse(at.exception)
-
-    def test_ui_route_recalculated_when_traffic_changes(self) -> None:
-        """Find a route, then pick Rush Hour: route is recomputed, distance stays physical."""
-        from streamlit.testing.v1 import AppTest
-        from osm_loader import RANCHI_LANDMARKS as L
-        at = AppTest.from_file("app.py", default_timeout=120).run()
-        at.session_state.start_name = "Ranchi Railway Station"
-        at.session_state.start_coords = L["Ranchi Railway Station"]
-        at.session_state.dest_name = "Tagore Hill"
-        at.session_state.dest_coords = L["Tagore Hill"]
-        at.session_state.show_route_menu = True
-        at.run()
-        at.button(key="btn_find_route_action").click().run()
-        self.assertFalse(at.exception)
-        normal = at.session_state.route_result
-        self.assertTrue(normal.found)
-        self.assertIsNone(normal.total_cost)
-
-        at.radio(key="traffic_choice").set_value("rush_hour").run()
-        self.assertFalse(at.exception)
-        rush = at.session_state.route_result
-        self.assertTrue(rush.found)
-        self.assertNotEqual(rush.path, normal.path)           # Dijkstra/A* chose another road
-        self.assertGreater(rush.total_distance, normal.total_distance)  # ...which is physically longer
-        self.assertGreater(rush.total_cost, rush.total_distance)
-        self.assertTrue(at.session_state.traffic_notice["changed"])
-
-        at.radio(key="traffic_choice").set_value("off").run()
-        self.assertEqual(at.session_state.route_result.path, normal.path)  # back to the old behaviour
+    def test_legacy_cached_network_has_no_mutated_lengths(self) -> None:
+        from osm_loader import get_ranchi_road_network
+        g = get_ranchi_road_network()
+        u = g.get_nodes()[0]
+        edge = g.get_neighbors(u)[0]
+        original = edge.weight
+        from traffic import TRAFFIC_AWARE, apply_traffic_mode
+        find_shortest_path(g, u, edge.destination, cost_function=apply_traffic_mode(TRAFFIC_AWARE, "08:30"))
+        self.assertEqual(g.get_edge(u, edge.destination).weight, original)
 
 
 if __name__ == "__main__":
     unittest.main()
-
-

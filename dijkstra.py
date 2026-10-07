@@ -36,8 +36,7 @@ class PathResult:
     visited_nodes_count: int
     found: bool
     algorithm: str = "Dijkstra"
-    # Traffic-adjusted routing cost of the route. None when traffic simulation
-    # is off (total_distance is then the only cost, exactly as before).
+    # Sum of edge costs minimized by the search (seconds in traffic-aware mode).
     total_cost: Optional[float] = None
 
 
@@ -91,6 +90,7 @@ def find_shortest_path(
             execution_time_sec=elapsed,
             visited_nodes_count=1,
             found=True,
+            total_cost=0.0 if cost_function else None,
         )
 
     # Distances map: tracks best-known shortest distance from source to each node
@@ -139,6 +139,8 @@ def find_shortest_path(
                 )
 
             step_cost = cost_function(current_node, edge) if cost_function else edge.weight
+            if step_cost < 0:
+                raise ValueError("Dijkstra's algorithm requires non-negative edge costs.")
             new_dist = current_dist + step_cost
 
             # Relaxation step: update neighbor distance if a shorter path is discovered

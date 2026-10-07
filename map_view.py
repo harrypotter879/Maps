@@ -49,10 +49,11 @@ def _add_traffic_layer(
     m: Any,
     graph: Graph,
     traffic_mode: Optional[str],
+    departure_time: Any,
     bounds: Tuple[float, float, float, float],
 ) -> None:
     """
-    Draw simulated traffic on existing roads (green / orange / red lines).
+    Draw modeled traffic estimates on existing roads (green / yellow / red lines).
     bounds = (min_lat, min_lon, max_lat, max_lon). Does nothing if mode is off.
     """
     import folium
@@ -61,8 +62,7 @@ def _add_traffic_layer(
         iter_traffic_segments,
     )
 
-    groups = iter_traffic_segments(graph, traffic_mode, bounds)
-    mode_label = TRAFFIC_MODE_LABELS.get(traffic_mode or "", "")
+    groups = iter_traffic_segments(graph, traffic_mode, departure_time, bounds)
     # Draw LOW first so congested roads end up on top
     for level, width in ((LOW, 3), (MEDIUM, 4), (HIGH, 5)):
         lines = groups.get(level) or []
@@ -73,8 +73,16 @@ def _add_traffic_layer(
             color=TRAFFIC_COLORS[level],
             weight=width,
             opacity=0.75,
-            tooltip=f"{TRAFFIC_ICONS[level]} {level.upper()} traffic (simulated, {mode_label})",
+            tooltip=f"{TRAFFIC_ICONS[level]} {level.capitalize()} estimated traffic",
         ).add_to(m)
+    legend = folium.Element(
+        """<div style="position:fixed;bottom:24px;left:24px;z-index:9999;background:#fff;
+        padding:10px 13px;border-radius:8px;box-shadow:0 2px 10px #0003;font:13px sans-serif;">
+        <b>Traffic estimate</b><br><span style="color:#16A34A">●</span> Low &nbsp;
+        <span style="color:#EAB308">●</span> Moderate &nbsp;<span style="color:#DC2626">●</span> High
+        <div style="margin-top:5px;color:#64748B;font-size:11px;max-width:230px">Modeled from road type and departure time; not live traffic.</div></div>"""
+    )
+    m.get_root().html.add_child(legend)
 
 
 def _format_travel_time(distance_m: float, speed_kmh: float) -> str:
@@ -417,10 +425,11 @@ def build_empty_map(
     include_search_bar: bool = False,
     graph: Optional[Graph] = None,
     traffic_mode: Optional[str] = None,
+    departure_time: Any = None,
 ) -> Any:
     """
     Construct an initial interactive Folium map centered on Ranchi with optional markers.
-    If `graph` and `traffic_mode` are given, simulated traffic is drawn around the map centre.
+    If `graph` and `traffic_mode` are given, modeled traffic is drawn around the map centre.
     """
     import folium
 
@@ -445,7 +454,7 @@ def build_empty_map(
         # ~2.5 km square around the map centre
         d_lat, d_lon = 0.0225, 0.0245
         _add_traffic_layer(
-            m, graph, traffic_mode,
+            m, graph, traffic_mode, departure_time,
             (map_center[0] - d_lat, map_center[1] - d_lon, map_center[0] + d_lat, map_center[1] + d_lon),
         )
 
@@ -510,10 +519,11 @@ def build_folium_map(
     include_search_bar: bool = False,
     show_hud: bool = True,
     traffic_mode: Optional[str] = None,
+    departure_time: Any = None,
 ) -> Any:
     """
     Build and return a Folium Map instance for route visualization.
-    If `traffic_mode` is set, roads around the route are coloured by simulated traffic.
+    If `traffic_mode` is set, roads around the route are coloured by modeled traffic.
     """
     import folium
 
@@ -550,7 +560,7 @@ def build_folium_map(
         lons = [p[1] for p in all_bounds_points]
         pad = 0.004  # ~400 m margin around the route
         _add_traffic_layer(
-            m, graph, traffic_mode,
+            m, graph, traffic_mode, departure_time,
             (min(lats) - pad, min(lons) - pad, max(lats) + pad, max(lons) + pad),
         )
 

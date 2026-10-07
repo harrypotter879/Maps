@@ -149,6 +149,9 @@ def graph_from_json(file_path: str) -> Graph:
         v = str(edge["v"])
         weight = float(edge["weight"])
         road_name = edge.get("road_name", "")
+        highway = edge.get("highway")
+        if isinstance(highway, list):
+            highway = ", ".join(str(value) for value in highway if value)
         geometry = edge.get("geometry")
         geom_points = [tuple(pt) for pt in geometry] if geometry else None
         graph.add_edge(
@@ -158,6 +161,7 @@ def graph_from_json(file_path: str) -> Graph:
             bidirectional=False,  # OSM edges are directed; reverse edges are explicit
             road_name=road_name,
             geometry=geom_points,
+            highway=str(highway) if highway else None,
         )
 
     return graph
@@ -190,6 +194,8 @@ def save_graph_to_json(
                 "weight": round(edge.weight, 2),
                 "road_name": edge.road_name,
             }
+            if edge.highway:
+                entry["highway"] = edge.highway
             if edge.geometry:
                 entry["geometry"] = [[round(lat, 6), round(lon, 6)] for lat, lon in edge.geometry]
             edges_data.append(entry)
@@ -248,6 +254,10 @@ def download_osm_road_network(
         elif not name:
             name = ""
 
+        highway = data.get("highway")
+        if isinstance(highway, list):
+            highway = ", ".join(str(value) for value in highway if value)
+
         geometry = None
         geom = data.get("geometry", None)
         if geom is not None:
@@ -260,6 +270,7 @@ def download_osm_road_network(
             bidirectional=False,
             road_name=str(name),
             geometry=geometry,
+            highway=str(highway) if highway else None,
         )
 
     if cache_path:

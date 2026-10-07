@@ -48,6 +48,7 @@ Both pathfinding algorithms are built from first principles using Python's stand
   - **Turn-by-Turn Road Corridor Guidance**: Step-by-step street directions grouping consecutive segments into named corridors.
   - **Interactive Map Selection**: Click anywhere on the map to set origin, destination, or current location pins with automatic reverse geocoding.
   - **⇄ Swap Button**: Instant one-click interchange of start and destination points.
+  - **Traffic-Aware Route Estimation**: choose Shortest Distance or Traffic-Aware routing, set a departure time or quick preset, and compare the recommended route's modeled time with the shortest-distance route.
 - **Two Pure-Python Algorithms (From Scratch)**:
   - **Dijkstra's Algorithm**: Exhaustive uniform-cost search tracking cumulative distance $g(n)$.
   - **A\* Search Algorithm**: Informed best-first search tracking $f(n) = g(n) + h(n)$ using the great-circle Haversine distance heuristic.
@@ -94,6 +95,11 @@ streamlit run app.py
    - When a route is active: Distance ($\text{km}$/$\text{m}$), estimated driving time, estimated walking time, and total road steps.
    - Collapsible *"🗺️ Turn-by-Turn Navigation Itinerary"* with exact road names and corridor lengths.
    - One-click `"✕ Clear Route"` to return to the clean map anytime.
+6. **Traffic-Aware Route Estimation**:
+   - Select **Shortest Distance** to minimize unchanged OSM edge lengths, or **Traffic-Aware** to minimize estimated travel time.
+   - Choose a departure time or Morning Peak, Midday, Evening Peak, and Night presets. A traffic layer and compact legend show Low, Moderate, and High modeled congestion.
+   - Route results show physical distance, estimated travel time, average modeled speed, segment conditions, and a comparison with the shortest-distance route.
+   - These are deterministic model estimates, not live traffic. The bundled Ranchi cache has no OSM `highway` tags, so the estimator uses recognizable road names where possible and an urban fallback. Fresh OSM imports preserve `highway` tags.
 
 ---
 
@@ -106,7 +112,8 @@ Maps/
 ├── main.py              # Unified CLI entry point & interactive console session manager
 ├── graph.py             # Weighted Graph & Edge dataclasses with (lat, lon) coordinates
 ├── dijkstra.py          # Custom Dijkstra algorithm with min-heap priority queue (from scratch)
-├── astar.py             # Custom A* algorithm with Haversine distance heuristic (from scratch)
+├── astar.py             # Custom A* with admissible distance/time heuristics
+├── traffic.py           # Centralized road-speed and time-of-day traffic estimates
 ├── osm_loader.py        # OSMnx downloader, JSON cache serializer, coordinate resolver
 ├── map_view.py          # Folium interactive HTML map generator with markers, search widget, and routes
 ├── display.py           # Terminal rendering, turn-by-turn road corridors, comparison tables
@@ -124,9 +131,10 @@ Maps/
 | [`app.py`](app.py) | Streamlit web navigation UI: location search bar with instant map pins, searchable endpoints, swap button, Folium map rendering, click handler, and travel time ETA cards. |
 | [`geocoder.py`](geocoder.py) | OpenStreetMap Nominatim geocoding & reverse geocoding with custom User-Agent, $0.5\text{s}$ rate-limiting, in-memory caching, coordinate parser, and local landmark fallback. |
 | [`map_view.py`](map_view.py) | Builds interactive Folium Leaflet maps with client-side floating search box, search pins, route polylines, and clean trip navigation HUD. |
-| [`astar.py`](astar.py) | Custom A* implementation using `heapq` and $f(n) = g(n) + h(n)$ evaluation with Haversine straight-line distance heuristic. |
-| [`dijkstra.py`](dijkstra.py) | Custom Dijkstra implementation using `heapq`. Exhaustive priority queue search tracking cumulative distance $g(n)$. |
-| [`graph.py`](graph.py) | Adjacency-list `Graph` storing node coordinates `(lat, lon)`, curved edge geometries, and fast vectorized `find_nearest_node()`. |
+| [`astar.py`](astar.py) | Custom A* using `heapq`; uses a distance heuristic for distance routes and a speed-scaled admissible time heuristic for traffic-aware routes. |
+| [`dijkstra.py`](dijkstra.py) | Custom Dijkstra implementation using `heapq`; minimizes physical distance or a supplied non-negative edge cost. |
+| [`traffic.py`](traffic.py) | Centralized modeled speeds, departure periods, traffic levels, per-edge travel time, route summaries, and map-layer segments. |
+| [`graph.py`](graph.py) | Adjacency-list `Graph` storing node coordinates `(lat, lon)`, edge geometry and optional OSM highway classification, and fast vectorized `find_nearest_node()`. |
 | [`osm_loader.py`](osm_loader.py) | Ingests real road networks from OpenStreetMap via OSMnx, manages local JSON caching, and resolves landmark names or GPS coordinates. |
 | [`display.py`](display.py) | Formats terminal output: side-by-side benchmark tables, turn-by-turn itineraries, and formatted metric strings. |
 | [`main.py`](main.py) | CLI argument parser (`argparse`), dual-mode selector (Real-World OSM vs Fictional Stage 1), and interactive console navigator. |

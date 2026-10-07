@@ -92,7 +92,19 @@ def find_shortest_path_astar(
         raise KeyError(f"Destination location '{destination}' not found in the network.")
 
     if heuristic is None:
-        heuristic = default_geographic_heuristic
+        if cost_function is None:
+            heuristic = default_geographic_heuristic
+        else:
+            # A custom edge cost can use different units (such as seconds).
+            # Use a geographic lower bound only when the cost function provides
+            # a mathematically safe distance-to-cost multiplier.
+            multiplier = getattr(cost_function, "heuristic_multiplier", None)
+            if edge_penalties and any(value < 1.0 for value in edge_penalties.values()):
+                multiplier = None
+            if multiplier is None:
+                heuristic = lambda _graph, _node, _target: 0.0
+            else:
+                heuristic = lambda g, n, t: default_geographic_heuristic(g, n, t) * multiplier
 
     start_time = time.perf_counter()
 
@@ -109,6 +121,7 @@ def find_shortest_path_astar(
             visited_nodes_count=1,
             found=True,
             algorithm="A*",
+            total_cost=0.0 if cost_function else None,
         )
 
     # g_score: exact shortest cost known from source to each node
