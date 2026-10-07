@@ -97,7 +97,7 @@ streamlit run app.py
    - One-click `"✕ Clear Route"` to return to the clean map anytime.
 6. **Traffic-Aware Route Estimation**:
    - Select **Shortest Distance** to minimize unchanged OSM edge lengths, or **Traffic-Aware** to minimize estimated travel time.
-   - Choose a departure time or Morning Peak, Midday, Evening Peak, and Night presets. A traffic layer and compact legend show Low, Moderate, and High modeled congestion.
+   - Choose a departure time or Morning Peak, Midday, Evening Peak, and Night presets. Before routing, a compact local preview shows nearby modeled traffic; after routing, it clears and colors only the selected path Low, Moderate, or High.
    - Route results show physical distance, estimated travel time, average modeled speed, segment conditions, and a comparison with the shortest-distance route.
    - These are deterministic model estimates, not live traffic. The bundled Ranchi cache has no OSM `highway` tags, so the estimator uses recognizable road names where possible and an urban fallback. Fresh OSM imports preserve `highway` tags.
 

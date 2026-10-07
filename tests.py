@@ -1279,6 +1279,10 @@ class TestTrafficAwareRouting(unittest.TestCase):
         self.assertEqual(len(groups[HIGH]), 1)
         self.assertEqual(len(groups[LOW]), 1)
         self.assertEqual(len(groups[MEDIUM]), 0)
+        nearby = iter_traffic_segments(
+            g, TRAFFIC_AWARE, "08:30", bounds=(23.34, 85.30, 23.375, 85.34),
+        )
+        self.assertEqual(sum(map(len, nearby.values())), 2)
 
     def test_map_traffic_overlay(self) -> None:
         try:
@@ -1295,9 +1299,10 @@ class TestTrafficAwareRouting(unittest.TestCase):
         g.add_node("B", 23.36, 85.33)
         g.add_node("C", 23.365, 85.325)
         m = build_folium_map(g, res, (23.37, 85.32), (23.36, 85.33), traffic_mode=TRAFFIC_AWARE, departure_time="08:30")
-        self.assertIn("Traffic on selected route", m.get_root().render())
+        self.assertIn("Traffic along selected route", m.get_root().render())
         empty_html = build_empty_map(center=(23.37, 85.32), graph=g, traffic_mode=TRAFFIC_AWARE, departure_time="08:30").get_root().render()
-        self.assertNotIn("Traffic on selected route", empty_html)
+        self.assertIn("Nearby traffic estimates", empty_html)
+        self.assertNotIn("Traffic along selected route", empty_html)
 
     def test_legacy_cached_network_has_no_mutated_lengths(self) -> None:
         from osm_loader import get_ranchi_road_network

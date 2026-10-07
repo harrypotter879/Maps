@@ -210,22 +210,52 @@ def analyse_route(graph: Graph, path: List[str], mode: Optional[str], departure_
 
 
 def iter_traffic_segments(graph: Graph, mode: Optional[str], departure_time: time | str | None,
-                          path: List[str]) -> Dict[str, List[List[List[float]]]]:
-    """Return only the road segments traversed by the selected route."""
+                          path: Optional[List[str]] = None,
+                          bounds: Optional[Tuple[float, float, float, float]] = None,
+                          max_segments: int = 6000) -> Dict[str, List[List[List[float]]]]:
+    """Return selected-route segments, or a bounded nearby sample before routing."""
     groups: Dict[str, List[List[List[float]]]] = {HIGH: [], MEDIUM: [], LOW: []}
     if mode != TRAFFIC_AWARE:
         return groups
-    for u, v in zip(path[:-1], path[1:]):
-        edge = graph.get_edge(u, v)
-        if edge is None:
-            continue
-        if edge.geometry:
-            points = [[p[0], p[1]] for p in edge.geometry]
-        else:
-            origin = graph.get_node_coords(u)
-            destination = graph.get_node_coords(v)
-            if origin is None or destination is None:
+    if path:
+        for u, v in zip(path[:-1], path[1:]):
+            edge = graph.get_edge(u, v)
+            if edge is None:
                 continue
-            points = [[origin[0], origin[1]], [destination[0], destination[1]]]
-        groups[get_traffic_level(edge, departure_time)].append(points)
+            if edge.geometry:
+                points = [[p[0], p[1]] for p in edge.geometry]
+            else:
+                origin = graph.get_node_coords(u)
+                destination = graph.get_node_coords(v)
+                if origin is None or destination is None:
+                    continue
+                points = [[origin[0], origin[1]], [destination[0], destination[1]]]
+            groups[get_traffic_level(edge, departure_time)].append(points)
+        return groups
+
+    if bounds is None:
+        return groups
+    min_lat, min_lon, max_lat, max_lon = bounds
+    seen = set()
+    for u in graph.get_nodes():
+        origin = graph.get_node_coords(u)
+        if origin is None or not (min_lat <= origin[0] <= max_lat and min_lon <= origin[1] <= max_lon):
+            continue
+        for edge in graph.get_neighbors(u):
+            key = frozenset((u, edge.destination))
+            if key in seen:
+                continue
+            seen.add(key)
+            destination = graph.get_node_coords(edge.destination)
+            if edge.geometry:
+                points = [[p[0], p[1]] for p in edge.geometry]
+            elif destination is not None:
+                points = [[origin[0], origin[1]], [destination[0], destination[1]]]
+            else:
+                continue
+            groups[get_traffic_level(edge, departure_time)].append(points)
+    remaining = max_segments
+    for level in (HIGH, MEDIUM, LOW):
+        groups[level] = groups[level][:remaining]
+        remaining -= len(groups[level])
     return groups

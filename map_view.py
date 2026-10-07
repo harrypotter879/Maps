@@ -50,10 +50,11 @@ def _add_traffic_layer(
     graph: Graph,
     traffic_mode: Optional[str],
     departure_time: Any,
-    route_path: List[str],
+    route_path: Optional[List[str]] = None,
+    local_bounds: Optional[Tuple[float, float, float, float]] = None,
 ) -> None:
     """
-    Draw traffic only on segments traversed by the selected route.
+    Draw route traffic, or a small nearby preview before a route is selected.
     """
     import folium
     from traffic import (
@@ -61,24 +62,36 @@ def _add_traffic_layer(
         iter_traffic_segments,
     )
 
-    groups = iter_traffic_segments(graph, traffic_mode, departure_time, route_path)
-    # Wider traffic strokes sit beneath the blue route line, leaving colored
-    # edges visible while preserving a clear route centerline.
-    for level, width in ((LOW, 10), (MEDIUM, 10), (HIGH, 10)):
+    groups = iter_traffic_segments(
+        graph, traffic_mode, departure_time, path=route_path, bounds=local_bounds,
+    )
+    if route_path:
+        # Route mode uses a white casing and traffic-colored segments, with no
+        # blue stroke covering the congestion colors.
+        route_points = _extract_polyline_points(graph, route_path)
+        if route_points:
+            folium.PolyLine(
+                locations=route_points, color="#FFFFFF", weight=12,
+                opacity=1.0, interactive=False,
+            ).add_to(m)
+    # Draw the traffic estimate as the visible road trace.
+    for level, width in ((LOW, 8), (MEDIUM, 8), (HIGH, 8)):
         lines = groups.get(level) or []
         if not lines:
             continue
+        scope = "on the selected route" if route_path else "nearby"
         folium.PolyLine(
             locations=lines,
             color=TRAFFIC_COLORS[level],
             weight=width,
             opacity=0.9,
-            tooltip=f"{TRAFFIC_ICONS[level]} {level.capitalize()} estimated traffic on this route",
+            tooltip=f"{TRAFFIC_ICONS[level]} {level.capitalize()} estimated traffic {scope}",
         ).add_to(m)
+    legend_title = "Traffic along selected route" if route_path else "Nearby traffic estimates"
     legend = folium.Element(
-        """<div style="position:fixed;bottom:24px;left:24px;z-index:9999;background:#fff;
+        f"""<div style="position:fixed;bottom:24px;left:24px;z-index:9999;background:#fff;
         padding:10px 13px;border-radius:8px;box-shadow:0 2px 10px #0003;font:13px sans-serif;">
-        <b>Traffic on selected route</b><br><span style="color:#16A34A">●</span> Low &nbsp;
+        <b>{legend_title}</b><br><span style="color:#16A34A">●</span> Low &nbsp;
         <span style="color:#EAB308">●</span> Moderate &nbsp;<span style="color:#DC2626">●</span> High
         <div style="margin-top:5px;color:#64748B;font-size:11px;max-width:230px">Modeled from road type and departure time; not live traffic.</div></div>"""
     )
@@ -450,7 +463,14 @@ def build_empty_map(
         control_scale=True,
     )
 
-    # No route has been chosen yet, so there are no route segments to color.
+    if graph is not None and traffic_mode:
+        # Before a route exists, show traffic only around the current map center.
+        lat_margin, lon_margin = 0.009, 0.012
+        _add_traffic_layer(
+            m, graph, traffic_mode, departure_time,
+            local_bounds=(map_center[0] - lat_margin, map_center[1] - lon_margin,
+                          map_center[0] + lat_margin, map_center[1] + lon_margin),
+        )
 
     if start_point:
         lat, lon, label = start_point
@@ -549,8 +569,8 @@ def build_folium_map(
     all_bounds_points.extend(primary_points)
 
     if traffic_mode:
-        # Only roads on the selected route receive traffic colors. The
-        # selected route polyline is drawn afterward as a clear blue core.
+        # Route mode replaces the nearby overlay with only the roads traversed
+        # by the selected route; its traffic colors are the route trace.
         _add_traffic_layer(
             m, graph, traffic_mode, departure_time, result.path,
         )
@@ -639,7 +659,7 @@ def build_folium_map(
         # Standard clean user-friendly navigation HUD
         if alternative_results and len(alternative_results) > 1:
             for i, alt_res in enumerate(alternative_results):
-                if i == active_route_index:
+                if i == active_route_index or traffic_mode:
                     continue
                 alt_points = _extract_polyline_points(graph, alt_res.path)
                 all_bounds_points.extend(alt_points)
@@ -653,7 +673,7 @@ def build_folium_map(
                     tooltip=f"Alternative Route {i+1} ({alt_dist})",
                 ).add_to(m)
 
-            if primary_points:
+            if primary_points and not traffic_mode:
                 folium.PolyLine(
                     locations=primary_points,
                     color="#2563EB",  # Royal blue
@@ -663,7 +683,7 @@ def build_folium_map(
                     tooltip=f"Selected Route ({dist_display})",
                 ).add_to(m)
         else:
-            if primary_points:
+            if primary_points and not traffic_mode:
                 folium.PolyLine(
                     locations=primary_points,
                     color="#2563EB",  # Royal blue
