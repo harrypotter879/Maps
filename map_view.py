@@ -58,11 +58,10 @@ def _add_traffic_layer(
     """
     import folium
     from traffic import (
-        TRAFFIC_COLORS, TRAFFIC_ICONS, HIGH, MEDIUM, LOW,
-        iter_traffic_segments,
+        TRAFFIC_ICONS, HIGH, MEDIUM, LOW, iter_colored_traffic_segments,
     )
 
-    groups = iter_traffic_segments(
+    segments = iter_colored_traffic_segments(
         graph, traffic_mode, departure_time, path=route_path, bounds=local_bounds,
     )
     if route_path:
@@ -74,19 +73,25 @@ def _add_traffic_layer(
                 locations=route_points, color="#FFFFFF", weight=12,
                 opacity=1.0, interactive=False,
             ).add_to(m)
-    # Draw the traffic estimate as the visible road trace.
-    for level, width in ((LOW, 8), (MEDIUM, 8), (HIGH, 8)):
-        lines = groups.get(level) or []
-        if not lines:
-            continue
-        scope = "on the selected route" if route_path else "nearby"
-        folium.PolyLine(
-            locations=lines,
-            color=TRAFFIC_COLORS[level],
-            weight=width,
-            opacity=0.9,
-            tooltip=f"{TRAFFIC_ICONS[level]} {level.capitalize()} estimated traffic {scope}",
-        ).add_to(m)
+    # Group by the continuous color so hourly changes remain visible without
+    # creating one Leaflet layer for every road segment.
+    stroke_width = 9 if route_path else 4
+    stroke_opacity = 0.95 if route_path else 0.62
+    color_groups: Dict[Tuple[str, str], List[List[List[float]]]] = {}
+    for color, level, points in segments:
+        color_groups.setdefault((color, level), []).append(points)
+    for level in (LOW, MEDIUM, HIGH):
+        for (color, group_level), lines in color_groups.items():
+            if group_level != level:
+                continue
+            scope = "on the selected route" if route_path else "nearby"
+            folium.PolyLine(
+                locations=lines,
+                color=color,
+                weight=stroke_width,
+                opacity=stroke_opacity,
+                tooltip=f"{TRAFFIC_ICONS[level]} {level.capitalize()} estimated traffic {scope}",
+            ).add_to(m)
     legend_title = "Traffic along selected route" if route_path else "Nearby traffic estimates"
     legend = folium.Element(
         f"""<div style="position:fixed;bottom:24px;left:24px;z-index:9999;background:#fff;

@@ -17,6 +17,7 @@ Features:
 """
 
 from __future__ import annotations
+import hashlib
 import math
 from datetime import time
 from typing import Dict, List, Optional, Tuple
@@ -124,6 +125,22 @@ def init_session_state() -> None:
         st.session_state.departure_time = time(8, 30)
     if "time_preset" not in st.session_state:
         st.session_state.time_preset = "Morning Peak · 08:30"
+    # Keep the visible 12-hour controls in step with the model's 24-hour value.
+    departure = normalize_departure_time(st.session_state.departure_time)
+    if "departure_hour_12" not in st.session_state:
+        st.session_state.departure_hour_12 = departure.hour % 12 or 12
+    if "departure_minute" not in st.session_state:
+        st.session_state.departure_minute = departure.minute
+    if "departure_ampm" not in st.session_state:
+        st.session_state.departure_ampm = "PM" if departure.hour >= 12 else "AM"
+    preset_labels = {
+        time(8, 30): "Morning Peak · 08:30",
+        time(13, 0): "Midday · 01:00 PM",
+        time(18, 0): "Evening Peak · 06:00 PM",
+        time(22, 0): "Night · 10:00 PM",
+    }
+    # Repair old sessions where a preset label and the actual departure time drifted apart.
+    st.session_state.time_preset = preset_labels.get(departure, "Custom time")
     if "baseline_result" not in st.session_state:
         st.session_state.baseline_result = None  # shortest-by-distance route, for comparison
     if "traffic_notice" not in st.session_state:
@@ -218,7 +235,31 @@ def _apply_time_preset() -> None:
         "Evening Peak · 06:00 PM": time(18, 0),
         "Night · 10:00 PM": time(22, 0),
     }
-    st.session_state.departure_time = presets[st.session_state.time_preset]
+    selected = presets.get(st.session_state.time_preset)
+    if selected is None:  # Custom time is selected by editing the clock controls.
+        return
+    st.session_state.departure_time = selected
+    st.session_state.departure_hour_12 = selected.hour % 12 or 12
+    st.session_state.departure_minute = selected.minute
+    st.session_state.departure_ampm = "PM" if selected.hour >= 12 else "AM"
+    on_routing_settings_change()
+
+
+def _apply_manual_departure_time() -> None:
+    """Convert the visible 12-hour clock to the model's 24-hour time."""
+    hour_12 = int(st.session_state.departure_hour_12)
+    minute = int(st.session_state.departure_minute)
+    hour_24 = (hour_12 % 12) + (12 if st.session_state.departure_ampm == "PM" else 0)
+    selected = time(hour_24, minute)
+    st.session_state.departure_time = selected
+
+    labels_by_time = {
+        time(8, 30): "Morning Peak · 08:30",
+        time(13, 0): "Midday · 01:00 PM",
+        time(18, 0): "Evening Peak · 06:00 PM",
+        time(22, 0): "Night · 10:00 PM",
+    }
+    st.session_state.time_preset = labels_by_time.get(selected, "Custom time")
     on_routing_settings_change()
 
 
@@ -238,14 +279,40 @@ def render_traffic_controls(is_realworld: bool) -> None:
             help="Traffic-aware routing minimizes estimated travel time. Road distances remain unchanged.",
         )
         if st.session_state.traffic_choice == TRAFFIC_AWARE:
-            c1, c2 = st.columns([1, 1.6])
-            with c1:
-                st.time_input("Departure time", key="departure_time", on_change=on_routing_settings_change)
-            with c2:
-                st.selectbox("Quick preset", ["Morning Peak · 08:30", "Midday · 01:00 PM", "Evening Peak · 06:00 PM", "Night · 10:00 PM"], key="time_preset", on_change=_apply_time_preset)
+            clock_col, preset_col = st.columns([2.1, 1.5])
+            with clock_col:
+                st.markdown("**Departure time**")
+                hour_col, minute_col, ampm_col = st.columns([1, 1, 0.9], gap="small")
+                with hour_col:
+                    st.selectbox(
+                        "Hour", list(range(1, 13)), key="departure_hour_12",
+                        format_func=lambda value: f"{value:02d}",
+                        on_change=_apply_manual_departure_time,
+                        label_visibility="collapsed",
+                    )
+                with minute_col:
+                    st.selectbox(
+                        "Minute", list(range(60)), key="departure_minute",
+                        format_func=lambda value: f"{value:02d}",
+                        on_change=_apply_manual_departure_time,
+                        label_visibility="collapsed",
+                    )
+                with ampm_col:
+                    st.selectbox(
+                        "AM or PM", ["AM", "PM"], key="departure_ampm",
+                        on_change=_apply_manual_departure_time,
+                        label_visibility="collapsed",
+                    )
+            with preset_col:
+                st.selectbox(
+                    "Quick preset",
+                    ["Custom time", "Morning Peak · 08:30", "Midday · 01:00 PM", "Evening Peak · 06:00 PM", "Night · 10:00 PM"],
+                    key="time_preset", on_change=_apply_time_preset,
+                    help="Choose a typical time to quickly compare modeled traffic.",
+                )
             period = PERIOD_LABELS.get(get_traffic_period(st.session_state.departure_time), "")
-            st.caption(f"Modeled period: {period}. {TRAFFIC_ICONS[LOW]} Low  ·  {TRAFFIC_ICONS[MEDIUM]} Moderate  ·  {TRAFFIC_ICONS[HIGH]} High")
-            st.caption("Traffic is estimated from road characteristics and modeled time patterns; it is not live traffic.")
+            st.caption(f"{st.session_state.departure_time.strftime('%I:%M %p').lstrip('0')} · {period} · {TRAFFIC_ICONS[LOW]} Low  ·  {TRAFFIC_ICONS[MEDIUM]} Moderate  ·  {TRAFFIC_ICONS[HIGH]} High")
+            st.caption("Estimated from road type and time of day; traffic is not live.")
         notice = st.session_state.get("traffic_notice")
         mode = get_traffic_mode()
         if mode is None and notice is None:
@@ -258,9 +325,9 @@ def render_traffic_controls(is_realworld: bool) -> None:
         elif kind == "route" and notice["changed"]:
             st.success("Alternative route selected to reduce modeled travel time.")
         elif kind == "route":
-            st.info("The current route remains the best estimated choice for these settings.")
+            st.caption("The current route remains the best estimated choice for these settings.")
         elif kind == "mode_only" and mode:
-            st.info("Traffic-aware estimates are ready. Choose Find Route to calculate a recommendation.")
+            st.caption("Choose Find Route to calculate a traffic-aware recommendation.")
         elif kind == "no_route":
             st.error("❌ No route found under these traffic conditions.")
         elif kind == "error":
@@ -286,7 +353,7 @@ def render_route_information(result: PathResult, is_realworld: bool) -> None:
     with st.expander("📋 Traffic-Aware Route Estimate", expanded=True):
         c1, c2, c3 = st.columns(3)
         c1.metric("Distance", _fmt_dist(result.total_distance))
-        c2.metric("Estimated travel time", f"{est_min:.0f} min", help="Modeled estimate based on road class and departure time.")
+        c2.metric("Estimated travel time", f"{est_min:.1f} min", help="Modeled estimate based on road class and departure time.")
         c3.metric("Traffic impact", f"{impact_icon} {info.impact.capitalize()}")
         st.markdown(
             f"- Road segments: {TRAFFIC_ICONS[LOW]} {info.level_counts[LOW]} low · "
@@ -298,8 +365,8 @@ def render_route_information(result: PathResult, is_realworld: bool) -> None:
         if baseline and baseline.found and base_info:
             base_min = base_info.travel_time_seconds / 60
             st.caption(
-                f"Route comparison · Shortest distance: {_fmt_dist(baseline.total_distance)} / {base_min:.0f} min; "
-                f"recommended: {_fmt_dist(result.total_distance)} / {est_min:.0f} min."
+                f"Route comparison · Shortest distance: {_fmt_dist(baseline.total_distance)} / {base_min:.1f} min; "
+                f"recommended: {_fmt_dist(result.total_distance)} / {est_min:.1f} min."
             )
             if not is_alternative:
                 st.caption("The shortest-distance route is also the fastest estimated route.")
@@ -372,12 +439,20 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
             departure_time=st.session_state.departure_time,
         )
 
+    route_signature = "-".join(str(node) for node in primary_result.path) if primary_result and primary_result.found else "preview"
+    map_signature = "|".join((
+        "drawer" if st.session_state.show_route_menu else "full",
+        route_signature,
+        get_traffic_mode() or "distance",
+        st.session_state.departure_time.strftime("%H:%M"),
+    ))
     map_data = st_folium(
         folium_map,
         width=None,
         height=map_height,
         use_container_width=True,
         returned_objects=["last_clicked"],
+        key=f"pathfinder-map-{hashlib.sha1(map_signature.encode()).hexdigest()[:12]}",
     )
 
     if map_data and map_data.get("last_clicked"):
@@ -423,15 +498,6 @@ def main() -> None:
                 opacity: 1;
                 transform: translateX(0);
             }
-        }
-        .route-drawer-card {
-            animation: slideInFromLeft 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-            background: #ffffff;
-            border-radius: 14px;
-            padding: 16px 20px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.12);
-            border: 1px solid #E2E8F0;
-            margin-bottom: 12px;
         }
         .active-loc-chip {
             background: #F0FDF4;
@@ -655,7 +721,7 @@ def main() -> None:
         if is_realworld and get_traffic_mode():
             _info = analyse_route(load_cached_osm_network(), primary_result.path, get_traffic_mode(), st.session_state.departure_time)
             if _info:
-                drive_time = f"{_info.travel_time_seconds / 60:.0f} min estimated"
+                drive_time = f"{_info.travel_time_seconds / 60:.1f} min estimated"
         walk_time = estimate_travel_time(primary_result.total_distance, speed_kmh=4.5)
 
         st.markdown(
@@ -696,7 +762,7 @@ def main() -> None:
                 r_dist = f"{res.total_distance/1000:.2f} km" if res.total_distance >= 1000 else f"{res.total_distance:.0f} m"
                 r_time = estimate_travel_time(res.total_distance, speed_kmh=30.0)
                 if get_traffic_mode() and res.total_cost is not None:
-                    options.append(f"Route {i+1} ({r_dist}, ~{res.total_cost/60:.0f} min)")
+                    options.append(f"Route {i+1} ({r_dist}, ~{res.total_cost/60:.1f} min)")
                 else:
                     options.append(f"Route {i+1} ({r_dist}, ~{r_time})")
                 
@@ -725,7 +791,6 @@ def main() -> None:
 
         # Sliding Directions Drawer on Left
         with col_menu:
-            st.markdown('<div class="route-drawer-card">', unsafe_allow_html=True)
             head_col1, head_col2 = st.columns([4, 1])
             with head_col1:
                 st.markdown("### 🧭 Directions")
@@ -885,8 +950,6 @@ def main() -> None:
                 else:
                     compute_routes(is_realworld)
                     st.rerun()
-
-            st.markdown('</div>', unsafe_allow_html=True)
 
         # Right Column: Map
         with col_map:

@@ -33,7 +33,6 @@ BASE_SPEEDS_KMH: Dict[str, float] = {
     "residential": 20.0, "living_street": 12.0, "service": 15.0,
     "road": 20.0, "unknown": 25.0,
 }
-TRAFFIC_SPEED_FACTORS = {LOW: 1.0, MEDIUM: 0.7, HIGH: 0.4}
 MAX_MODELED_SPEED_KMH = max(BASE_SPEEDS_KMH.values())
 
 # Modeled periods are adjustable assumptions, not observations.
@@ -48,20 +47,32 @@ PERIOD_LABELS = {
     "midday": "Midday", "evening_peak": "Evening peak", "night": "Night",
 }
 
-# Model assumption: morning congestion weighs more heavily on major approaches;
-# evening congestion shifts toward secondary/local corridors. These contrasting
-# profiles make departure-time estimates meaningfully different, without
-# claiming measured or directional traffic observations.
-PERIOD_LEVELS = {
-    "early_morning": {"major": LOW, "secondary": LOW, "local": LOW},
-    "morning_peak": {"major": HIGH, "secondary": MEDIUM, "local": LOW},
-    "midday": {"major": MEDIUM, "secondary": LOW, "local": LOW},
-    "evening_peak": {"major": MEDIUM, "secondary": HIGH, "local": MEDIUM},
-    "night": {"major": LOW, "secondary": LOW, "local": LOW},
+# Modeled fraction of base speed remaining at each hour (00:00 through 23:00).
+# Values are interpolated continuously between hours. They are gentle, generic
+# urban patterns, not measured Ranchi traffic. Evening activity extends onto
+# secondary roads; midday congestion is concentrated on major roads.
+HOURLY_SPEED_FACTORS: Dict[str, Tuple[float, ...]] = {
+    "major": (
+        .96, .955, .95, .945, .94, .93, .89, .84, .78, .75, .78, .80,
+        .82, .83, .82, .80, .77, .73, .70, .72, .76, .82, .88, .93,
+    ),
+    "secondary": (
+        .98, .975, .97, .965, .96, .95, .94, .91, .88, .86, .87, .88,
+        .89, .90, .89, .87, .84, .79, .74, .76, .80, .85, .91, .96,
+    ),
+    "local": (
+        .99, .989, .988, .987, .985, .98, .975, .97, .965, .96, .962, .964,
+        .966, .968, .966, .962, .958, .954, .95, .952, .96, .97, .98, .987,
+    ),
+    "unknown": (
+        .997, .996, .995, .994, .993, .992, .99, .988, .986, .984, .985, .986,
+        .987, .988, .987, .986, .985, .984, .983, .984, .986, .989, .993, .996,
+    ),
 }
+TRAFFIC_LEVEL_THRESHOLDS = {HIGH: 0.76, MEDIUM: 0.88}
 
-_MAJOR_NAME = re.compile(r"\b(?:nh\s*\d+|national highway|highway|expressway|bypass|ring road|main road)\b", re.I)
-_LOCAL_NAME = re.compile(r"\b(?:lane|service road|living street|colony road)\b", re.I)
+_MAJOR_NAME = re.compile(r"\b(?:nh\s*\d+|national highway|highway|expressway|bypass|ring road|main road|airport road)\b", re.I)
+_LOCAL_NAME = re.compile(r"\b(?:lane|service road|living street|colony road|gali)\b", re.I)
 _HIGHWAY_SPEED_CLASS = {
     "motorway": "motorway", "motorway_link": "motorway",
     "trunk": "trunk", "trunk_link": "trunk",
@@ -122,22 +133,56 @@ def road_traffic_group(edge: Edge) -> str:
     road_class = classify_road(edge)
     if road_class in {"motorway", "trunk", "primary"}:
         return "major"
-    if road_class in {"secondary", "tertiary", "unclassified", "road"}:
+    if road_class in {"secondary", "tertiary"}:
         return "secondary"
-    return "local"
+    if road_class in {"residential", "living_street", "service", "unclassified"}:
+        return "local"
+    return "unknown"
+
+
+def modeled_speed_factor(edge: Edge, departure_time: time | str | None) -> float:
+    """Interpolate the road-group speed factor continuously across the day."""
+    group = road_traffic_group(edge)
+    profile = HOURLY_SPEED_FACTORS[group]
+    departure = normalize_departure_time(departure_time)
+    hour = departure.hour + departure.minute / 60.0
+    lower_hour = int(hour)
+    upper_hour = (lower_hour + 1) % 24
+    fraction = hour - lower_hour
+    return profile[lower_hour] + (profile[upper_hour] - profile[lower_hour]) * fraction
 
 
 def get_traffic_level(edge: Edge, departure_time: time | str | None) -> str:
-    period = get_traffic_period(departure_time)
-    group = road_traffic_group(edge)
-    return PERIOD_LEVELS[period][group]
+    factor = modeled_speed_factor(edge, departure_time)
+    if factor <= TRAFFIC_LEVEL_THRESHOLDS[HIGH]:
+        return HIGH
+    if factor <= TRAFFIC_LEVEL_THRESHOLDS[MEDIUM]:
+        return MEDIUM
+    return LOW
+
+
+def get_traffic_color(edge: Edge, departure_time: time | str | None) -> str:
+    """Return a smooth green-to-red color from the modeled speed factor."""
+    factor = modeled_speed_factor(edge, departure_time)
+    green, yellow, red = (22, 163, 74), (234, 179, 8), (220, 38, 38)
+    if factor >= 0.92:
+        return "#16A34A"
+    if factor >= 0.80:
+        start, end = green, yellow
+        progress = (0.92 - factor) / 0.12
+    elif factor >= 0.64:
+        start, end = yellow, red
+        progress = (0.80 - factor) / 0.16
+    else:
+        return "#DC2626"
+    rgb = tuple(round(a + (b - a) * progress) for a, b in zip(start, end))
+    return "#" + "".join(f"{channel:02X}" for channel in rgb)
 
 
 def estimated_speed_kmh(edge: Edge, departure_time: time | str | None) -> float:
     road_class = classify_road(edge)
     base_speed = BASE_SPEEDS_KMH.get(road_class, BASE_SPEEDS_KMH["unknown"])
-    level = get_traffic_level(edge, departure_time)
-    return base_speed * TRAFFIC_SPEED_FACTORS[level]
+    return base_speed * modeled_speed_factor(edge, departure_time)
 
 
 def estimated_travel_time_seconds(edge: Edge, departure_time: time | str | None) -> float:
@@ -211,14 +256,18 @@ def analyse_route(graph: Graph, path: List[str], mode: Optional[str], departure_
     return RouteTrafficInfo(mode, departure, total_dist, total_time, counts, dists)
 
 
-def iter_traffic_segments(graph: Graph, mode: Optional[str], departure_time: time | str | None,
-                          path: Optional[List[str]] = None,
-                          bounds: Optional[Tuple[float, float, float, float]] = None,
-                          max_segments: int = 6000) -> Dict[str, List[List[List[float]]]]:
-    """Return selected-route segments, or a bounded nearby sample before routing."""
-    groups: Dict[str, List[List[List[float]]]] = {HIGH: [], MEDIUM: [], LOW: []}
+def iter_colored_traffic_segments(
+    graph: Graph,
+    mode: Optional[str],
+    departure_time: time | str | None,
+    path: Optional[List[str]] = None,
+    bounds: Optional[Tuple[float, float, float, float]] = None,
+    max_segments: int = 6000,
+) -> List[Tuple[str, str, List[List[float]]]]:
+    """Return colored route segments, or a bounded nearby sample before routing."""
+    groups: Dict[str, List[Tuple[str, str, List[List[float]]]]] = {HIGH: [], MEDIUM: [], LOW: []}
     if mode != TRAFFIC_AWARE:
-        return groups
+        return []
     if path:
         for u, v in zip(path[:-1], path[1:]):
             edge = graph.get_edge(u, v)
@@ -232,11 +281,12 @@ def iter_traffic_segments(graph: Graph, mode: Optional[str], departure_time: tim
                 if origin is None or destination is None:
                     continue
                 points = [[origin[0], origin[1]], [destination[0], destination[1]]]
-            groups[get_traffic_level(edge, departure_time)].append(points)
-        return groups
+            level = get_traffic_level(edge, departure_time)
+            groups[level].append((get_traffic_color(edge, departure_time), level, points))
+        return [segment for level in (HIGH, MEDIUM, LOW) for segment in groups[level]]
 
     if bounds is None:
-        return groups
+        return []
     min_lat, min_lon, max_lat, max_lon = bounds
     seen = set()
     for u in graph.get_nodes():
@@ -255,9 +305,29 @@ def iter_traffic_segments(graph: Graph, mode: Optional[str], departure_time: tim
                 points = [[origin[0], origin[1]], [destination[0], destination[1]]]
             else:
                 continue
-            groups[get_traffic_level(edge, departure_time)].append(points)
+            level = get_traffic_level(edge, departure_time)
+            groups[level].append((get_traffic_color(edge, departure_time), level, points))
     remaining = max_segments
+    selected = []
     for level in (HIGH, MEDIUM, LOW):
         groups[level] = groups[level][:remaining]
         remaining -= len(groups[level])
+        selected.extend(groups[level])
+    return selected
+
+
+def iter_traffic_segments(
+    graph: Graph,
+    mode: Optional[str],
+    departure_time: time | str | None,
+    path: Optional[List[str]] = None,
+    bounds: Optional[Tuple[float, float, float, float]] = None,
+    max_segments: int = 6000,
+) -> Dict[str, List[List[List[float]]]]:
+    """Group route or nearby traffic segments by their Low/Medium/High label."""
+    groups: Dict[str, List[List[List[float]]]] = {HIGH: [], MEDIUM: [], LOW: []}
+    for _color, level, points in iter_colored_traffic_segments(
+        graph, mode, departure_time, path=path, bounds=bounds, max_segments=max_segments,
+    ):
+        groups[level].append(points)
     return groups

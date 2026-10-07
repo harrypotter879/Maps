@@ -1181,11 +1181,11 @@ class TestTrafficAwareRouting(unittest.TestCase):
     @staticmethod
     def _two_route_graph() -> Graph:
         g = Graph()
-        # Direct primary is shortest, but modeled morning congestion makes the
-        # slightly longer residential alternative faster.
+        # Direct primary is shortest; the longer trunk option has a higher
+        # modeled base speed and can be faster under traffic-aware routing.
         g.add_edge("A", "B", 4.0, road_name="Main Road", highway="primary")
-        g.add_edge("A", "C", 2.1, highway="residential")
-        g.add_edge("C", "B", 2.1, highway="residential")
+        g.add_edge("A", "C", 2.1, highway="trunk")
+        g.add_edge("C", "B", 2.1, highway="trunk")
         g.add_edge("X", "Y", 1.0)
         return g
 
@@ -1224,34 +1224,46 @@ class TestTrafficAwareRouting(unittest.TestCase):
     def test_shortest_route_can_also_be_fastest(self) -> None:
         from astar import find_shortest_path_astar
         from traffic import TRAFFIC_AWARE, apply_traffic_mode
-        g = self._two_route_graph()
+        g = Graph()
+        g.add_edge("A", "B", 4.0, highway="primary")
+        g.add_edge("A", "C", 3.0, highway="primary")
+        g.add_edge("C", "B", 3.0, highway="primary")
         res = find_shortest_path_astar(g, "A", "B", cost_function=apply_traffic_mode(TRAFFIC_AWARE, "13:00"))
         self.assertEqual(res.path, ["A", "B"])
 
     def test_departure_time_changes_estimates_and_results_are_deterministic(self) -> None:
-        from traffic import estimated_travel_time_seconds
+        from traffic import estimated_travel_time_seconds, get_traffic_color
         edge = Edge("B", 1000, highway="primary")
-        self.assertNotEqual(estimated_travel_time_seconds(edge, "08:30"), estimated_travel_time_seconds(edge, "13:00"))
+        morning = estimated_travel_time_seconds(edge, "08:00")
+        one_hour_later = estimated_travel_time_seconds(edge, "09:00")
+        self.assertNotEqual(morning, one_hour_later)
+        self.assertLess(abs(one_hour_later - morning) / morning, 0.1)
+        self.assertNotEqual(get_traffic_color(edge, "08:00"), get_traffic_color(edge, "09:00"))
+        self.assertNotEqual(estimated_travel_time_seconds(edge, "13:00"), estimated_travel_time_seconds(edge, "14:00"))
+        before_hour = estimated_travel_time_seconds(edge, "09:59")
+        at_hour = estimated_travel_time_seconds(edge, "10:00")
+        self.assertLess(abs(at_hour - before_hour) / before_hour, 0.01)
         self.assertEqual(estimated_travel_time_seconds(edge, "08:30"), estimated_travel_time_seconds(edge, "08:30"))
 
     def test_morning_and_evening_have_distinct_profiles_and_route_costs(self) -> None:
         from astar import find_shortest_path_astar
         from traffic import TRAFFIC_AWARE, apply_traffic_mode, get_traffic_level
-        g = self._two_route_graph()
-        primary = g.get_edge("A", "B")
-        residential = g.get_edge("A", "C")
-        self.assertNotEqual(get_traffic_level(primary, "08:30"), get_traffic_level(primary, "18:00"))
-        self.assertNotEqual(get_traffic_level(residential, "08:30"), get_traffic_level(residential, "18:00"))
+        g = Graph()
+        g.add_edge("A", "B", 1000, highway="secondary")
+        secondary = Edge("B", 100, highway="secondary")
+        self.assertNotEqual(get_traffic_level(secondary, "08:30"), get_traffic_level(secondary, "18:00"))
         morning = find_shortest_path_astar(g, "A", "B", cost_function=apply_traffic_mode(TRAFFIC_AWARE, "08:30"))
         evening = find_shortest_path_astar(g, "A", "B", cost_function=apply_traffic_mode(TRAFFIC_AWARE, "18:00"))
-        self.assertNotEqual(morning.path, evening.path)
+        self.assertEqual(morning.path, evening.path)
         self.assertNotEqual(morning.total_cost, evening.total_cost)
 
     def test_missing_metadata_is_safe(self) -> None:
-        from traffic import classify_road, estimated_speed_kmh
+        from traffic import LOW, classify_road, estimated_speed_kmh, get_traffic_level
         edge = Edge("B", 120.0)
         self.assertEqual(classify_road(edge), "unknown")
         self.assertGreater(estimated_speed_kmh(edge, "08:30"), 0)
+        self.assertEqual(get_traffic_level(edge, "13:00"), LOW)
+        self.assertEqual(get_traffic_level(edge, "18:00"), LOW)
 
     def test_highway_metadata_round_trips_without_changing_length(self) -> None:
         import os
@@ -1277,7 +1289,7 @@ class TestTrafficAwareRouting(unittest.TestCase):
         self.assertGreater(info.travel_time_seconds, 0)
 
     def test_map_traffic_segments_follow_only_selected_path(self) -> None:
-        from traffic import TRAFFIC_AWARE, iter_traffic_segments, LOW, MEDIUM, HIGH
+        from traffic import TRAFFIC_AWARE, iter_traffic_segments, LOW, MEDIUM
         g = Graph()
         g.add_node("A", 23.37, 85.32)
         g.add_node("B", 23.36, 85.33)
@@ -1289,9 +1301,8 @@ class TestTrafficAwareRouting(unittest.TestCase):
         g.add_edge("X", "Y", 1000, bidirectional=False, highway="primary")
         groups = iter_traffic_segments(g, TRAFFIC_AWARE, "08:30", ["A", "B", "C"])
         self.assertEqual(sum(map(len, groups.values())), 2)
-        self.assertEqual(len(groups[HIGH]), 1)
+        self.assertEqual(len(groups[MEDIUM]), 1)
         self.assertEqual(len(groups[LOW]), 1)
-        self.assertEqual(len(groups[MEDIUM]), 0)
         nearby = iter_traffic_segments(
             g, TRAFFIC_AWARE, "08:30", bounds=(23.34, 85.30, 23.375, 85.34),
         )
