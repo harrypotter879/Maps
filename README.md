@@ -99,7 +99,7 @@ streamlit run app.py
    - Select **Shortest Distance** to minimize unchanged OSM edge lengths, or **Traffic-Aware** to minimize estimated travel time.
    - Choose a departure time or Morning Peak, Midday, Evening Peak, and Night presets. Before routing, a compact local preview shows nearby modeled traffic; after routing, it clears and colors only the selected path Low, Moderate, or High.
    - Route results show physical distance, estimated travel time, average modeled speed, segment conditions, and a comparison with the shortest-distance route.
-   - These are deterministic model estimates, not live traffic. The bundled Ranchi cache has no OSM `highway` tags, so the estimator uses recognizable road names where possible and an urban fallback. Fresh OSM imports preserve `highway` tags.
+   - These are deterministic model estimates, not live traffic. Morning peak applies a stronger modeled slowdown to major roads; evening peak shifts that slowdown toward secondary and local roads, so the same departure change can alter segment colors, ETA, and the recommended route. The bundled Ranchi cache has no OSM `highway` tags, so the estimator uses recognizable road names where possible and an urban fallback. Fresh OSM imports preserve `highway` tags.
 
 ---
 

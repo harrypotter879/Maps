@@ -48,13 +48,15 @@ PERIOD_LABELS = {
     "midday": "Midday", "evening_peak": "Evening peak", "night": "Night",
 }
 
-# Busy periods affect major roads more; local residential streets are less
-# affected. Each road gets the same result for the same class and departure.
+# Model assumption: morning congestion weighs more heavily on major approaches;
+# evening congestion shifts toward secondary/local corridors. These contrasting
+# profiles make departure-time estimates meaningfully different, without
+# claiming measured or directional traffic observations.
 PERIOD_LEVELS = {
     "early_morning": {"major": LOW, "secondary": LOW, "local": LOW},
     "morning_peak": {"major": HIGH, "secondary": MEDIUM, "local": LOW},
     "midday": {"major": MEDIUM, "secondary": LOW, "local": LOW},
-    "evening_peak": {"major": HIGH, "secondary": MEDIUM, "local": LOW},
+    "evening_peak": {"major": MEDIUM, "secondary": HIGH, "local": MEDIUM},
     "night": {"major": LOW, "secondary": LOW, "local": LOW},
 }
 

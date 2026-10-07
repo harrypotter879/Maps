@@ -219,6 +219,7 @@ def _apply_time_preset() -> None:
         "Night · 10:00 PM": time(22, 0),
     }
     st.session_state.departure_time = presets[st.session_state.time_preset]
+    on_routing_settings_change()
 
 
 def render_traffic_controls(is_realworld: bool) -> None:

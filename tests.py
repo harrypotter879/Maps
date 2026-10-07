@@ -1234,6 +1234,19 @@ class TestTrafficAwareRouting(unittest.TestCase):
         self.assertNotEqual(estimated_travel_time_seconds(edge, "08:30"), estimated_travel_time_seconds(edge, "13:00"))
         self.assertEqual(estimated_travel_time_seconds(edge, "08:30"), estimated_travel_time_seconds(edge, "08:30"))
 
+    def test_morning_and_evening_have_distinct_profiles_and_route_costs(self) -> None:
+        from astar import find_shortest_path_astar
+        from traffic import TRAFFIC_AWARE, apply_traffic_mode, get_traffic_level
+        g = self._two_route_graph()
+        primary = g.get_edge("A", "B")
+        residential = g.get_edge("A", "C")
+        self.assertNotEqual(get_traffic_level(primary, "08:30"), get_traffic_level(primary, "18:00"))
+        self.assertNotEqual(get_traffic_level(residential, "08:30"), get_traffic_level(residential, "18:00"))
+        morning = find_shortest_path_astar(g, "A", "B", cost_function=apply_traffic_mode(TRAFFIC_AWARE, "08:30"))
+        evening = find_shortest_path_astar(g, "A", "B", cost_function=apply_traffic_mode(TRAFFIC_AWARE, "18:00"))
+        self.assertNotEqual(morning.path, evening.path)
+        self.assertNotEqual(morning.total_cost, evening.total_cost)
+
     def test_missing_metadata_is_safe(self) -> None:
         from traffic import classify_road, estimated_speed_kmh
         edge = Edge("B", 120.0)
