@@ -45,6 +45,38 @@ def _extract_polyline_points(graph: Graph, path: List[str]) -> List[List[float]]
     return points
 
 
+def _add_traffic_layer(
+    m: Any,
+    graph: Graph,
+    traffic_mode: Optional[str],
+    bounds: Tuple[float, float, float, float],
+) -> None:
+    """
+    Draw simulated traffic on existing roads (green / orange / red lines).
+    bounds = (min_lat, min_lon, max_lat, max_lon). Does nothing if mode is off.
+    """
+    import folium
+    from traffic import (
+        TRAFFIC_COLORS, TRAFFIC_ICONS, TRAFFIC_MODE_LABELS, HIGH, MEDIUM, LOW,
+        iter_traffic_segments,
+    )
+
+    groups = iter_traffic_segments(graph, traffic_mode, bounds)
+    mode_label = TRAFFIC_MODE_LABELS.get(traffic_mode or "", "")
+    # Draw LOW first so congested roads end up on top
+    for level, width in ((LOW, 3), (MEDIUM, 4), (HIGH, 5)):
+        lines = groups.get(level) or []
+        if not lines:
+            continue
+        folium.PolyLine(
+            locations=lines,
+            color=TRAFFIC_COLORS[level],
+            weight=width,
+            opacity=0.75,
+            tooltip=f"{TRAFFIC_ICONS[level]} {level.upper()} traffic (simulated, {mode_label})",
+        ).add_to(m)
+
+
 def _format_travel_time(distance_m: float, speed_kmh: float) -> str:
     """Calculate and format travel time based on distance and average speed."""
     if distance_m <= 0:
@@ -383,9 +415,12 @@ def build_empty_map(
     searched_point: Optional[Tuple[float, float, str]] = None,
     current_location: Optional[Tuple[float, float, str]] = None,
     include_search_bar: bool = False,
+    graph: Optional[Graph] = None,
+    traffic_mode: Optional[str] = None,
 ) -> Any:
     """
     Construct an initial interactive Folium map centered on Ranchi with optional markers.
+    If `graph` and `traffic_mode` are given, simulated traffic is drawn around the map centre.
     """
     import folium
 
@@ -405,6 +440,14 @@ def build_empty_map(
         tiles="OpenStreetMap",
         control_scale=True,
     )
+
+    if graph is not None and traffic_mode:
+        # ~2.5 km square around the map centre
+        d_lat, d_lon = 0.0225, 0.0245
+        _add_traffic_layer(
+            m, graph, traffic_mode,
+            (map_center[0] - d_lat, map_center[1] - d_lon, map_center[0] + d_lat, map_center[1] + d_lon),
+        )
 
     if start_point:
         lat, lon, label = start_point
@@ -466,9 +509,11 @@ def build_folium_map(
     show_algorithm_stats: bool = False,
     include_search_bar: bool = False,
     show_hud: bool = True,
+    traffic_mode: Optional[str] = None,
 ) -> Any:
     """
     Build and return a Folium Map instance for route visualization.
+    If `traffic_mode` is set, roads around the route are coloured by simulated traffic.
     """
     import folium
 
@@ -498,6 +543,16 @@ def build_folium_map(
 
     primary_points = _extract_polyline_points(graph, result.path)
     all_bounds_points.extend(primary_points)
+
+    if traffic_mode:
+        # Traffic layer is added first so route lines are drawn on top of it
+        lats = [p[0] for p in all_bounds_points]
+        lons = [p[1] for p in all_bounds_points]
+        pad = 0.004  # ~400 m margin around the route
+        _add_traffic_layer(
+            m, graph, traffic_mode,
+            (min(lats) - pad, min(lons) - pad, max(lats) + pad, max(lons) + pad),
+        )
 
     if comparison_result is not None and comparison_result.found:
         # Comparison mode with both algorithms (retained for CLI benchmarking)

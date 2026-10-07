@@ -10,7 +10,7 @@ from __future__ import annotations
 import heapq
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from graph import Graph, Edge
 
@@ -36,9 +36,17 @@ class PathResult:
     visited_nodes_count: int
     found: bool
     algorithm: str = "Dijkstra"
+    # Traffic-adjusted routing cost of the route. None when traffic simulation
+    # is off (total_distance is then the only cost, exactly as before).
+    total_cost: Optional[float] = None
 
 
-def find_shortest_path(graph: Graph, source: str, destination: str) -> PathResult:
+def find_shortest_path(
+    graph: Graph,
+    source: str,
+    destination: str,
+    cost_function: Optional[Callable[[str, Edge], float]] = None,
+) -> PathResult:
     """
     Find the shortest path between `source` and `destination` using Dijkstra's algorithm.
 
@@ -48,6 +56,10 @@ def find_shortest_path(graph: Graph, source: str, destination: str) -> PathResul
         graph: The Graph instance containing the road network.
         source: The starting location name.
         destination: The target location name.
+        cost_function: Optional f(from_node, edge) -> routing cost, used for
+            traffic simulation. If omitted, the cost is the edge distance
+            (normal routing). The reported total_distance is always the
+            physical distance when a cost function is used.
 
     Returns:
         PathResult containing the path, route legs, total distance,
@@ -126,7 +138,8 @@ def find_shortest_path(graph: Graph, source: str, destination: str) -> PathResul
                     "Dijkstra's algorithm requires non-negative weights."
                 )
 
-            new_dist = current_dist + edge.weight
+            step_cost = cost_function(current_node, edge) if cost_function else edge.weight
+            new_dist = current_dist + step_cost
 
             # Relaxation step: update neighbor distance if a shorter path is discovered
             if new_dist < distances[edge.destination]:
@@ -169,6 +182,20 @@ def find_shortest_path(graph: Graph, source: str, destination: str) -> PathResul
 
     path.reverse()
     legs.reverse()
+
+    if cost_function is not None:
+        # Physical distance = sum of legs; routing cost = what Dijkstra minimised
+        return PathResult(
+            source=source,
+            destination=destination,
+            path=path,
+            legs=legs,
+            total_distance=round(sum(leg.distance for leg in legs), 3),
+            execution_time_sec=elapsed,
+            visited_nodes_count=visited_count,
+            found=True,
+            total_cost=round(distances[destination], 3),
+        )
 
     return PathResult(
         source=source,

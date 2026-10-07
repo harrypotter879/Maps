@@ -12,6 +12,8 @@ Features:
 - Interactive Folium map with road-geometry routes and click-to-select endpoints
 - User-friendly navigation metrics: Total Distance, Estimated Drive Time, Estimated Walk Time
 - Turn-by-turn guidance corridor itinerary
+- 🚦 Traffic Simulation (Normal / Rush Hour / Heavy Traffic): simulated traffic changes the
+  routing COST (distance x multiplier) but never the physical distance
 """
 
 from __future__ import annotations
@@ -28,6 +30,11 @@ from osm_loader import get_ranchi_road_network, RANCHI_LANDMARKS
 from geocoder import search_locations, reverse_geocode, GeocodedLocation
 from map_view import build_folium_map, build_empty_map
 from display import format_distance
+from traffic import (
+    TRAFFIC_COLORS, TRAFFIC_ICONS, TRAFFIC_MODE_LABELS, TRAFFIC_MULTIPLIERS,
+    SIMULATED_DRIVE_SPEED_KMH, HIGH, MEDIUM, LOW,
+    analyse_route, apply_traffic_mode, is_valid_traffic_mode, simulated_drive_minutes,
+)
 
 MY_LOCATION_LABEL = "🔵 My Current Location"
 
@@ -105,6 +112,193 @@ def init_session_state() -> None:
     if "last_clicked_coords" not in st.session_state:
         st.session_state.last_clicked_coords = None
 
+    # Traffic simulation: "off" = normal routing (cost = distance)
+    if "traffic_choice" not in st.session_state:
+        st.session_state.traffic_choice = "off"
+    if "baseline_result" not in st.session_state:
+        st.session_state.baseline_result = None  # shortest-by-distance route, for comparison
+    if "traffic_notice" not in st.session_state:
+        st.session_state.traffic_notice = None
+
+
+def get_traffic_mode() -> Optional[str]:
+    """Currently selected traffic mode, or None when traffic simulation is off."""
+    choice = st.session_state.get("traffic_choice", "off")
+    return choice if is_valid_traffic_mode(choice) else None
+
+
+def compute_routes(is_realworld: bool) -> None:
+    """
+    Run the existing route search (A* + alternatives) and store results in session state.
+    Uses the traffic-adjusted cost when a traffic mode is selected, otherwise plain distance.
+    Raises on invalid locations (callers decide how to show the error).
+    """
+    mode = get_traffic_mode() if is_realworld else None
+    cost_fn = apply_traffic_mode(mode)
+
+    if is_realworld:
+        graph = load_cached_osm_network()
+        start_lat, start_lon = st.session_state.start_coords
+        dest_lat, dest_lon = st.session_state.dest_coords
+        start_node, _ = graph.find_nearest_node(start_lat, start_lon)
+        dest_node, _ = graph.find_nearest_node(dest_lat, dest_lon)
+    else:
+        graph = load_fictional_network()
+        start_node, dest_node = st.session_state.start_name, st.session_state.dest_name
+
+    alts = find_alternative_routes(graph, start_node, dest_node, max_routes=3, cost_function=cost_fn)
+    if alts:
+        st.session_state.alternative_results = alts
+        st.session_state.route_result = alts[0]
+        st.session_state.active_route_index = 0
+    else:
+        st.session_state.alternative_results = []
+        st.session_state.route_result = find_shortest_path_astar(
+            graph, start_node, dest_node, cost_function=cost_fn
+        )
+
+    # Plain shortest-distance route, used to explain what traffic changed
+    st.session_state.baseline_result = (
+        find_shortest_path_astar(graph, start_node, dest_node) if mode else None
+    )
+
+
+def on_traffic_mode_change() -> None:
+    """Callback: user picked a new traffic mode -> re-run the route (if one exists) and record what changed."""
+    is_realworld = "Real-World" in st.session_state.get("network_mode", "Real-World")
+    mode = get_traffic_mode()
+    previous = st.session_state.route_result
+    st.session_state.traffic_notice = None
+
+    if not is_realworld or previous is None or not previous.found:
+        # No active route to update; the map overlay alone changes
+        st.session_state.traffic_notice = {"kind": "mode_only", "mode": mode}
+        return
+
+    try:
+        graph = load_cached_osm_network()
+        prev_info = analyse_route(graph, previous.path, mode)
+        compute_routes(is_realworld)
+        new = st.session_state.route_result
+        if new is None or not new.found:
+            st.session_state.traffic_notice = {"kind": "no_route", "mode": mode}
+            return
+        st.session_state.traffic_notice = {
+            "kind": "route",
+            "mode": mode,
+            "changed": new.path != previous.path,
+            "prev_distance": previous.total_distance,
+            "new_distance": new.total_distance,
+            "prev_high": prev_info.high_roads if prev_info else 0,
+            "prev_cost": prev_info.traffic_cost if prev_info else previous.total_distance,
+            "new_cost": new.total_cost if new.total_cost is not None else new.total_distance,
+        }
+    except Exception as e:  # never crash the UI because of traffic
+        st.session_state.traffic_notice = {"kind": "error", "mode": mode, "message": str(e)}
+
+
+def _fmt_dist(meters: float) -> str:
+    return f"{meters/1000:.2f} km" if meters >= 1000 else f"{meters:.0f} m"
+
+
+def render_traffic_controls(is_realworld: bool) -> None:
+    """🚦 Traffic Simulation section: mode selector, legend and 'what changed' message."""
+    if not is_realworld:
+        return
+    with st.container(border=True):
+        st.markdown("#### 🚦 Traffic Simulation")
+        st.radio(
+            "Traffic Mode",
+            options=["off"] + list(TRAFFIC_MODE_LABELS.keys()),
+            format_func=lambda k: "Off (distance only)" if k == "off" else TRAFFIC_MODE_LABELS[k],
+            horizontal=True,
+            key="traffic_choice",
+            on_change=on_traffic_mode_change,
+            help="Simulated traffic raises the routing COST of busy roads. Physical distance never changes.",
+        )
+        st.caption(
+            f"{TRAFFIC_ICONS[LOW]} Low ×{TRAFFIC_MULTIPLIERS[LOW]}  ·  "
+            f"{TRAFFIC_ICONS[MEDIUM]} Medium ×{TRAFFIC_MULTIPLIERS[MEDIUM]}  ·  "
+            f"{TRAFFIC_ICONS[HIGH]} High ×{TRAFFIC_MULTIPLIERS[HIGH]}  —  "
+            "⚠️ Simulated traffic for demonstration, not real-time data."
+        )
+        notice = st.session_state.get("traffic_notice")
+        mode = get_traffic_mode()
+        if mode is None and notice is None:
+            return
+        label = TRAFFIC_MODE_LABELS.get(mode, "")
+        if notice is None:
+            return
+        kind = notice["kind"]
+        if kind == "route" and mode is None:
+            st.info("Traffic simulation is off. Route recalculated using distance only.")
+        elif kind == "route" and notice["changed"]:
+            st.warning(
+                f"**🚦 Route Updated — {label}**\n\n"
+                + (f"The previous route contains {notice['prev_high']} {HIGH.upper()} traffic road segment(s). "
+                   if notice["prev_high"] else "The previous route is more costly under these traffic conditions. ")
+                + "An alternative route was selected to reduce traffic-adjusted travel cost "
+                f"({notice['prev_cost']/1000:.2f} → {notice['new_cost']/1000:.2f} km-equivalent).\n\n"
+                f"Previous distance: {_fmt_dist(notice['prev_distance'])} → "
+                f"New distance: {_fmt_dist(notice['new_distance'])}"
+            )
+        elif kind == "route":
+            st.success(f"**🚦 {label} applied.** The current route is still the best choice under these traffic conditions.")
+        elif kind == "mode_only" and mode:
+            st.info(f"🚦 **{label}** traffic applied. Roads on the map are coloured by simulated traffic. Select a route to see its effect.")
+        elif kind == "mode_only":
+            st.info("Traffic simulation is off.")
+        elif kind == "no_route":
+            st.error("❌ No route found under these traffic conditions.")
+        elif kind == "error":
+            st.error(f"Could not update the route: {notice.get('message', 'unknown error')}")
+
+
+def render_route_information(result: PathResult, is_realworld: bool) -> None:
+    """ROUTE INFORMATION / ROUTING ANALYSIS panels (only when traffic simulation is on)."""
+    mode = get_traffic_mode()
+    if not (is_realworld and mode and result and result.found):
+        return
+    graph = load_cached_osm_network()
+    info = analyse_route(graph, result.path, mode)
+    if info is None:
+        return
+    baseline = st.session_state.get("baseline_result")
+    base_info = analyse_route(graph, baseline.path, mode) if baseline and baseline.found else None
+    avoided = max(0, base_info.high_roads - info.high_roads) if base_info else 0
+    is_alternative = bool(baseline and baseline.found and baseline.path != result.path)
+    sim_min = simulated_drive_minutes(result.total_distance, info)
+    impact_icon = TRAFFIC_ICONS[info.impact]
+
+    with st.expander("📋 Route Information (traffic simulation)", expanded=True):
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Distance (physical)", _fmt_dist(result.total_distance))
+        c2.metric("Traffic-adjusted cost", f"{info.traffic_cost/1000:.2f} km-equivalent",
+                  help="distance × traffic multiplier, summed over every road. Used only to choose the route.")
+        c3.metric("Traffic impact", f"{impact_icon} {info.impact.capitalize()}")
+        st.markdown(
+            f"- Road segments: {TRAFFIC_ICONS[LOW]} {info.level_counts[LOW]} low · "
+            f"{TRAFFIC_ICONS[MEDIUM]} {info.level_counts[MEDIUM]} medium · "
+            f"{TRAFFIC_ICONS[HIGH]} {info.level_counts[HIGH]} high\n"
+            f"- Traffic avoided: {avoided} {HIGH.upper()} traffic road segment(s) compared with the shortest-distance route\n"
+            f"- Estimated / Simulated drive time: ~{sim_min:.0f} min "
+            f"(assumes {SIMULATED_DRIVE_SPEED_KMH:.0f} km/h, slowed by the traffic cost — not real traffic data)\n"
+            f"- Route status: {'✓ Alternative route selected' if is_alternative else '✓ Shortest route is also the best route'}"
+        )
+        if baseline and baseline.found and is_alternative and base_info:
+            st.caption(
+                f"Shortest-distance route: {_fmt_dist(baseline.total_distance)}, traffic cost "
+                f"{base_info.traffic_cost/1000:.2f} km-eq. Chosen route: {_fmt_dist(result.total_distance)}, "
+                f"traffic cost {info.traffic_cost/1000:.2f} km-eq."
+            )
+
+    with st.expander("🧠 Routing Analysis", expanded=False):
+        st.markdown(
+            f"- Algorithm: {result.algorithm} (distance heuristic + traffic-adjusted cost)\n"
+            f"- Nodes explored: {result.visited_nodes_count}\n"
+            f"- Traffic-adjusted cost: {info.traffic_cost/1000:.2f} km-equivalent"
+        )
+
 
 def swap_locations() -> None:
     """Swap start and destination locations in session state."""
@@ -147,6 +341,7 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
                 alternative_results=alt_res,
                 active_route_index=active_idx,
                 show_hud=False,  # Keep map canvas clean!
+                traffic_mode=get_traffic_mode(),
             )
         else:
             folium_map = build_empty_map(center=(23.3191843, 85.2987681), zoom=15)
@@ -159,6 +354,8 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
             dest_point=None,
             searched_point=st.session_state.searched_location,
             current_location=st.session_state.my_location,
+            graph=load_cached_osm_network() if (is_realworld and get_traffic_mode()) else None,
+            traffic_mode=get_traffic_mode() if is_realworld else None,
         )
 
     map_data = st_folium(
@@ -268,6 +465,7 @@ def main() -> None:
             "Road Network",
             ["Real-World Map (Ranchi, India)", "Fictional Regional Map (Stage 1)"],
             index=0,
+            key="network_mode",
             help="Choose between real-world OpenStreetMap data and the Stage 1 fictional regional network.",
         )
         is_realworld = "Real-World" in network_mode
@@ -432,11 +630,17 @@ def main() -> None:
                 unsafe_allow_html=True,
             )
 
+    # ── 🚦 Traffic Simulation controls ────────────────────────────────────
+    render_traffic_controls(is_realworld)
+
     # ── Active Route Summary Banner (ONLY when route is calculated) ───────
     primary_result: Optional[PathResult] = st.session_state.route_result
     if primary_result and primary_result.found:
         dist_label = f"{primary_result.total_distance/1000:.2f} km" if primary_result.total_distance >= 1000 else f"{primary_result.total_distance:.0f} m"
         drive_time = estimate_travel_time(primary_result.total_distance, speed_kmh=30.0)
+        if is_realworld and get_traffic_mode():
+            _info = analyse_route(load_cached_osm_network(), primary_result.path, get_traffic_mode())
+            drive_time = f"{simulated_drive_minutes(primary_result.total_distance, _info):.0f} min (simulated)"
         walk_time = estimate_travel_time(primary_result.total_distance, speed_kmh=4.5)
 
         st.markdown(
@@ -476,7 +680,10 @@ def main() -> None:
             for i, res in enumerate(alt_results):
                 r_dist = f"{res.total_distance/1000:.2f} km" if res.total_distance >= 1000 else f"{res.total_distance:.0f} m"
                 r_time = estimate_travel_time(res.total_distance, speed_kmh=30.0)
-                options.append(f"Route {i+1} ({r_dist}, ~{r_time})")
+                if res.total_cost is not None:
+                    options.append(f"Route {i+1} ({r_dist}, traffic cost {res.total_cost/1000:.2f} km-eq)")
+                else:
+                    options.append(f"Route {i+1} ({r_dist}, ~{r_time})")
                 
             selected_route = st.radio(
                 "Select Route", 
@@ -491,6 +698,8 @@ def main() -> None:
                 st.session_state.active_route_index = selected_idx
                 st.session_state.route_result = alt_results[selected_idx]
                 st.rerun()
+
+        render_route_information(primary_result, is_realworld)
 
     elif primary_result and not primary_result.found:
         st.error(f"❌ No route found between '{st.session_state.start_name}' and '{st.session_state.dest_name}'.")
@@ -650,35 +859,16 @@ def main() -> None:
             st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
             find_route_clicked = st.button("🚀 Find Route", type="primary", use_container_width=True, key="btn_find_route_action")
             if find_route_clicked:
+                st.session_state.traffic_notice = None
                 if is_realworld:
-                    graph = load_cached_osm_network()
-                    start_lat, start_lon = st.session_state.start_coords
-                    dest_lat, dest_lon = st.session_state.dest_coords
                     try:
-                        start_node, _ = graph.find_nearest_node(start_lat, start_lon)
-                        dest_node, _ = graph.find_nearest_node(dest_lat, dest_lon)
                         with st.spinner("Finding optimal route..."):
-                            alts = find_alternative_routes(graph, start_node, dest_node, max_routes=3)
-                            if alts:
-                                st.session_state.alternative_results = alts
-                                st.session_state.route_result = alts[0]
-                                st.session_state.active_route_index = 0
-                            else:
-                                st.session_state.alternative_results = []
-                                st.session_state.route_result = find_shortest_path_astar(graph, start_node, dest_node)
-                            st.rerun()
+                            compute_routes(is_realworld)
+                        st.rerun()
                     except Exception as e:
                         st.error(f"Error mapping coordinates: {e}")
                 else:
-                    fict_graph = load_fictional_network()
-                    alts = find_alternative_routes(fict_graph, st.session_state.start_name, st.session_state.dest_name, max_routes=3)
-                    if alts:
-                        st.session_state.alternative_results = alts
-                        st.session_state.route_result = alts[0]
-                        st.session_state.active_route_index = 0
-                    else:
-                        st.session_state.alternative_results = []
-                        st.session_state.route_result = find_shortest_path_astar(fict_graph, st.session_state.start_name, st.session_state.dest_name)
+                    compute_routes(is_realworld)
                     st.rerun()
 
             st.markdown('</div>', unsafe_allow_html=True)

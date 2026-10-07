@@ -60,6 +60,7 @@ def find_shortest_path_astar(
     destination: str,
     heuristic: Optional[Callable[[Graph, str, str], float]] = None,
     edge_penalties: Optional[Dict[Tuple[str, str], float]] = None,
+    cost_function: Optional[Callable[[str, Edge], float]] = None,
 ) -> PathResult:
     """
     Find the shortest path between `source` and `destination` using the A* algorithm from scratch.
@@ -70,6 +71,9 @@ def find_shortest_path_astar(
         destination: The target location name / node ID.
         heuristic: Optional custom heuristic function h(graph, current_node, target_node).
                    Defaults to `default_geographic_heuristic` (Haversine straight-line distance).
+        cost_function: Optional f(from_node, edge) -> routing cost (traffic simulation).
+                   If omitted the cost is the edge distance (normal routing). Traffic
+                   multipliers are >= 1, so the distance heuristic stays admissible.
 
     Returns:
         PathResult containing the reconstructed path, individual legs, total distance,
@@ -147,7 +151,7 @@ def find_shortest_path_astar(
         current_g = g_score[current_node]
 
         for edge in graph.get_neighbors(current_node):
-            weight = edge.weight
+            weight = cost_function(current_node, edge) if cost_function else edge.weight
             if edge_penalties:
                 weight *= edge_penalties.get((current_node, edge.destination), 1.0)
                 
@@ -206,6 +210,26 @@ def find_shortest_path_astar(
     path.reverse()
     legs.reverse()
 
+    if cost_function is not None:
+        # Physical distance = sum of legs; traffic cost = same legs re-priced
+        # (kept separate from g_score so alternative-route penalties don't leak in).
+        traffic_cost = 0.0
+        for leg in legs:
+            e = graph.get_edge(leg.origin, leg.destination)
+            traffic_cost += cost_function(leg.origin, e) if e else leg.distance
+        return PathResult(
+            source=source,
+            destination=destination,
+            path=path,
+            legs=legs,
+            total_distance=round(sum(leg.distance for leg in legs), 3),
+            execution_time_sec=elapsed,
+            visited_nodes_count=visited_count,
+            found=True,
+            algorithm="A*",
+            total_cost=round(traffic_cost, 3),
+        )
+
     return PathResult(
         source=source,
         destination=destination,
@@ -224,6 +248,7 @@ def find_alternative_routes(
     destination: str,
     max_routes: int = 3,
     penalty_factor: float = 1.5,
+    cost_function: Optional[Callable[[str, Edge], float]] = None,
 ) -> List[PathResult]:
     """
     Finds up to `max_routes` alternative paths between source and destination.
@@ -234,7 +259,8 @@ def find_alternative_routes(
 
     for _ in range(max_routes):
         res = find_shortest_path_astar(
-            graph, source, destination, edge_penalties=penalties
+            graph, source, destination, edge_penalties=penalties,
+            cost_function=cost_function,
         )
         if not res.found:
             break
