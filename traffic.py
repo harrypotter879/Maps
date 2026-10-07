@@ -210,31 +210,22 @@ def analyse_route(graph: Graph, path: List[str], mode: Optional[str], departure_
 
 
 def iter_traffic_segments(graph: Graph, mode: Optional[str], departure_time: time | str | None,
-                          bounds: Tuple[float, float, float, float], max_segments: int = 6000) -> Dict[str, List[List[List[float]]]]:
+                          path: List[str]) -> Dict[str, List[List[List[float]]]]:
+    """Return only the road segments traversed by the selected route."""
     groups: Dict[str, List[List[List[float]]]] = {HIGH: [], MEDIUM: [], LOW: []}
     if mode != TRAFFIC_AWARE:
         return groups
-    min_lat, min_lon, max_lat, max_lon = bounds
-    seen = set()
-    for u in graph.get_nodes():
-        c = graph.get_node_coords(u)
-        if c is None or not (min_lat <= c[0] <= max_lat and min_lon <= c[1] <= max_lon):
+    for u, v in zip(path[:-1], path[1:]):
+        edge = graph.get_edge(u, v)
+        if edge is None:
             continue
-        for edge in graph.get_neighbors(u):
-            key = frozenset((u, edge.destination))
-            if key in seen:
+        if edge.geometry:
+            points = [[p[0], p[1]] for p in edge.geometry]
+        else:
+            origin = graph.get_node_coords(u)
+            destination = graph.get_node_coords(v)
+            if origin is None or destination is None:
                 continue
-            seen.add(key)
-            if edge.geometry:
-                points = [[p[0], p[1]] for p in edge.geometry]
-            else:
-                d = graph.get_node_coords(edge.destination)
-                if d is None:
-                    continue
-                points = [[c[0], c[1]], [d[0], d[1]]]
-            groups[get_traffic_level(edge, departure_time)].append(points)
-    budget = max_segments
-    for level in (HIGH, MEDIUM, LOW):
-        groups[level] = groups[level][:budget]
-        budget -= len(groups[level])
+            points = [[origin[0], origin[1]], [destination[0], destination[1]]]
+        groups[get_traffic_level(edge, departure_time)].append(points)
     return groups

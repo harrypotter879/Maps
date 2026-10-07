@@ -1263,6 +1263,23 @@ class TestTrafficAwareRouting(unittest.TestCase):
         self.assertEqual(info.distance, res.total_distance)
         self.assertGreater(info.travel_time_seconds, 0)
 
+    def test_map_traffic_segments_follow_only_selected_path(self) -> None:
+        from traffic import TRAFFIC_AWARE, iter_traffic_segments, LOW, MEDIUM, HIGH
+        g = Graph()
+        g.add_node("A", 23.37, 85.32)
+        g.add_node("B", 23.36, 85.33)
+        g.add_node("C", 23.35, 85.34)
+        g.add_node("X", 23.38, 85.31)
+        g.add_node("Y", 23.39, 85.30)
+        g.add_edge("A", "B", 1000, bidirectional=False, highway="primary")
+        g.add_edge("B", "C", 1000, bidirectional=False, highway="residential")
+        g.add_edge("X", "Y", 1000, bidirectional=False, highway="primary")
+        groups = iter_traffic_segments(g, TRAFFIC_AWARE, "08:30", ["A", "B", "C"])
+        self.assertEqual(sum(map(len, groups.values())), 2)
+        self.assertEqual(len(groups[HIGH]), 1)
+        self.assertEqual(len(groups[LOW]), 1)
+        self.assertEqual(len(groups[MEDIUM]), 0)
+
     def test_map_traffic_overlay(self) -> None:
         try:
             import folium  # noqa: F401
@@ -1278,8 +1295,9 @@ class TestTrafficAwareRouting(unittest.TestCase):
         g.add_node("B", 23.36, 85.33)
         g.add_node("C", 23.365, 85.325)
         m = build_folium_map(g, res, (23.37, 85.32), (23.36, 85.33), traffic_mode=TRAFFIC_AWARE, departure_time="08:30")
-        self.assertIn("Traffic estimate", m.get_root().render())
-        self.assertIn("#DC2626", build_empty_map(center=(23.37, 85.32), graph=g, traffic_mode=TRAFFIC_AWARE, departure_time="08:30").get_root().render())
+        self.assertIn("Traffic on selected route", m.get_root().render())
+        empty_html = build_empty_map(center=(23.37, 85.32), graph=g, traffic_mode=TRAFFIC_AWARE, departure_time="08:30").get_root().render()
+        self.assertNotIn("Traffic on selected route", empty_html)
 
     def test_legacy_cached_network_has_no_mutated_lengths(self) -> None:
         from osm_loader import get_ranchi_road_network
