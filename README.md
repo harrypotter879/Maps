@@ -97,9 +97,9 @@ streamlit run app.py
    - One-click `"✕ Clear Route"` to return to the clean map anytime.
 6. **Traffic-Aware Route Estimation**:
    - Select **Shortest Distance** to minimize unchanged OSM edge lengths, or **Traffic-Aware** to minimize estimated travel time.
-   - Choose a departure time or Morning Peak, Midday, Evening Peak, and Night presets. Before routing, a compact local preview shows nearby modeled traffic; after routing, it clears and colors only the selected path Low, Moderate, or High.
+   - Choose a 12-hour departure time or Morning Peak, Midday, School Dismissal, Evening Peak, and Night presets. Before routing, a compact local preview shows nearby modeled traffic; after routing, it colors only the selected path Low, Moderate, or High.
    - Route results show physical distance, estimated travel time, average modeled speed, segment conditions, and a comparison with the shortest-distance route.
-   - These are deterministic model estimates, not live traffic. Speed factors are interpolated between hourly assumptions, so moving the departure time by one hour changes estimates gradually. Morning peak slows major roads most; evening peak also slows classified secondary roads; midday mainly slows major roads. The bundled Ranchi cache has no OSM `highway` tags, so recognizable names are used where possible and unclassified segments are treated conservatively. Fresh OSM imports preserve `highway` tags.
+   - These are deterministic model estimates, not live traffic. Speed factors are interpolated between hourly assumptions, so moving the departure time by one hour changes estimates gradually. Localized slowdowns apply around Main Road (Albert Ekka Chowk to Sujata Chowk), Lalpur/Circular Road, Ratu Road Chowk, Kantatoli Chowk, Booty More, and Upper Bazar during their modeled peak windows; the rest of the city keeps the existing road-class and time-of-day model. Hotspot locations and congestion factors are approximate assumptions. The bundled Ranchi cache has no OSM `highway` tags, so recognizable names are used where possible and unclassified segments are treated conservatively. Fresh OSM imports preserve `highway` tags.
 
 ---
 

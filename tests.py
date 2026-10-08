@@ -1257,6 +1257,44 @@ class TestTrafficAwareRouting(unittest.TestCase):
         self.assertEqual(morning.path, evening.path)
         self.assertNotEqual(morning.total_cost, evening.total_cost)
 
+    def test_hotspots_are_localized_and_follow_ranchi_peak_windows(self) -> None:
+        from traffic import HOTSPOT_ZONES, estimated_speed_kmh, estimated_travel_time_seconds, get_traffic_period, hotspot_speed_multiplier
+        g = Graph()
+        g.add_node("main_a", 23.36990, 85.32530)
+        g.add_node("main_b", 23.36950, 85.32525)
+        g.add_node("outer_a", 23.34000, 85.30000)
+        g.add_node("outer_b", 23.34050, 85.30000)
+        g.add_edge("main_a", "main_b", 100, highway="primary")
+        g.add_edge("outer_a", "outer_b", 100, highway="primary")
+        main = g.get_edge("main_a", "main_b")
+        outer = g.get_edge("outer_a", "outer_b")
+
+        # Hotspots intensify during the supplied windows and remain localized.
+        speeds = {
+            at: estimated_speed_kmh(main, at, graph=g, origin_node="main_a")
+            for at in ("07:00", "09:00", "14:00", "18:00")
+        }
+        self.assertLess(speeds["09:00"], speeds["07:00"])
+        self.assertLess(speeds["14:00"], speeds["07:00"])
+        self.assertLess(speeds["18:00"], speeds["07:00"])
+        self.assertEqual(
+            estimated_travel_time_seconds(outer, "09:00", graph=g, origin_node="outer_a"),
+            estimated_travel_time_seconds(outer, "09:00"),
+        )
+        self.assertEqual(get_traffic_period("10:15"), "morning_peak")
+        self.assertEqual(get_traffic_period("14:00"), "school_dismissal")
+        self.assertEqual(get_traffic_period("20:15"), "evening_peak")
+
+        # Every configured named hotspot has a spatial slowdown; distant roads do not.
+        for index, zone in enumerate(HOTSPOT_ZONES):
+            lat, lon = zone["path"][0]
+            near_a, near_b = f"zone_{index}_a", f"zone_{index}_b"
+            g.add_node(near_a, lat, lon)
+            g.add_node(near_b, lat + 0.0002, lon + 0.0002)
+            g.add_edge(near_a, near_b, 80, highway="primary")
+            edge = g.get_edge(near_a, near_b)
+            self.assertLess(hotspot_speed_multiplier(edge, "18:00", g, near_a), 1.0, zone["name"])
+
     def test_missing_metadata_is_safe(self) -> None:
         from traffic import LOW, classify_road, estimated_speed_kmh, get_traffic_level
         edge = Edge("B", 120.0)

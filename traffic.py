@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import time
+from math import cos, radians
 from typing import Callable, Dict, List, Optional, Tuple
 
 from graph import Edge, Graph
@@ -37,14 +38,17 @@ MAX_MODELED_SPEED_KMH = max(BASE_SPEEDS_KMH.values())
 
 # Modeled periods are adjustable assumptions, not observations.
 TIME_PERIODS = (
-    (time(6, 0), time(7, 30), "early_morning"),
-    (time(7, 30), time(10, 0), "morning_peak"),
-    (time(10, 0), time(16, 0), "midday"),
-    (time(16, 0), time(20, 0), "evening_peak"),
+    (time(6, 0), time(8, 0), "early_morning"),
+    (time(8, 0), time(10, 30), "morning_peak"),
+    (time(10, 30), time(13, 30), "midday"),
+    (time(13, 30), time(15, 0), "school_dismissal"),
+    (time(15, 0), time(17, 0), "afternoon"),
+    (time(17, 0), time(20, 30), "evening_peak"),
 )
 PERIOD_LABELS = {
-    "early_morning": "Early morning", "morning_peak": "Morning peak",
-    "midday": "Midday", "evening_peak": "Evening peak", "night": "Night",
+    "early_morning": "Early morning", "morning_peak": "Morning rush",
+    "midday": "Midday", "school_dismissal": "School dismissal",
+    "afternoon": "Afternoon", "evening_peak": "Evening rush", "night": "Night",
 }
 
 # Modeled fraction of base speed remaining at each hour (00:00 through 23:00).
@@ -70,6 +74,48 @@ HOURLY_SPEED_FACTORS: Dict[str, Tuple[float, ...]] = {
     ),
 }
 TRAFFIC_LEVEL_THRESHOLDS = {HIGH: 0.76, MEDIUM: 0.88}
+
+# Localized, deterministic Ranchi hotspot assumptions. Paths are approximate
+# corridor centerlines in latitude/longitude; widths avoid affecting the whole
+# city. Multipliers reduce the baseline estimated speed only inside a zone.
+HOTSPOT_ZONES = (
+    {
+        "name": "Main Road",
+        "path": ((23.36990, 85.32530), (23.36540, 85.32495), (23.36020, 85.32470), (23.35365, 85.32448)),
+        "radius_m": 230.0,
+        "normal": 0.84, "morning": 0.70, "school": 0.76, "evening": 0.66, "night": 0.90,
+    },
+    {
+        "name": "Lalpur and Circular Road",
+        "path": ((23.37215, 85.33829),), "radius_m": 520.0,
+        "normal": 0.90, "morning": 0.72, "school": 0.66, "evening": 0.68, "night": 1.0,
+    },
+    {
+        # Shaheed Chowk is used as the approximate Ratu Road junction anchor.
+        "name": "Ratu Road Chowk",
+        "path": ((23.37120, 85.32480),), "radius_m": 390.0,
+        "normal": 0.88, "morning": 0.73, "school": 0.80, "evening": 0.68, "night": 1.0,
+    },
+    {
+        "name": "Kantatoli Chowk",
+        "path": ((23.36700, 85.34750),), "radius_m": 480.0,
+        "normal": 0.93, "morning": 0.88, "school": 0.90, "evening": 0.72, "night": 1.0,
+    },
+    {
+        "name": "Booty More",
+        "path": ((23.39540, 85.38440),), "radius_m": 500.0,
+        "normal": 0.95, "morning": 0.91, "school": 0.92, "evening": 0.73, "night": 1.0,
+    },
+    {
+        "name": "Upper Bazar",
+        "path": ((23.37828, 85.31777),), "radius_m": 430.0,
+        "normal": 0.62, "morning": 0.54, "school": 0.50, "evening": 0.59, "night": 1.0,
+    },
+)
+
+_MORNING_RUSH = (time(8, 0), time(10, 30))
+_SCHOOL_DISMISSAL = (time(13, 30), time(15, 0))
+_EVENING_RUSH = (time(17, 0), time(20, 30))
 
 _MAJOR_NAME = re.compile(r"\b(?:nh\s*\d+|national highway|highway|expressway|bypass|ring road|main road|airport road)\b", re.I)
 _LOCAL_NAME = re.compile(r"\b(?:lane|service road|living street|colony road|gali)\b", re.I)
@@ -140,8 +186,106 @@ def road_traffic_group(edge: Edge) -> str:
     return "unknown"
 
 
-def modeled_speed_factor(edge: Edge, departure_time: time | str | None) -> float:
-    """Interpolate the road-group speed factor continuously across the day."""
+def _edge_points(edge: Edge, graph: Optional[Graph], origin_node: Optional[str]) -> List[Tuple[float, float]]:
+    if edge.geometry:
+        return [(float(lat), float(lon)) for lat, lon in edge.geometry]
+    if graph is not None and origin_node is not None:
+        origin = graph.get_node_coords(origin_node)
+        destination = graph.get_node_coords(edge.destination)
+        if origin is not None and destination is not None:
+            return [origin, destination]
+    return []
+
+
+def _point_segment_distance_m(
+    point: Tuple[float, float], start: Tuple[float, float], end: Tuple[float, float],
+) -> float:
+    """Approximate local distance in meters for Ranchi-scale coordinates."""
+    lat0 = point[0]
+    lon_scale = 111_320.0 * max(0.1, abs(cos(radians(lat0))))
+    px, py = (point[1] - start[1]) * lon_scale, (point[0] - start[0]) * 111_320.0
+    sx, sy = 0.0, 0.0
+    ex, ey = (end[1] - start[1]) * lon_scale, (end[0] - start[0]) * 111_320.0
+    dx, dy = ex - sx, ey - sy
+    length_sq = dx * dx + dy * dy
+    if length_sq == 0:
+        return (px * px + py * py) ** 0.5
+    fraction = max(0.0, min(1.0, (px * dx + py * dy) / length_sq))
+    nearest_x, nearest_y = sx + fraction * dx, sy + fraction * dy
+    return ((px - nearest_x) ** 2 + (py - nearest_y) ** 2) ** 0.5
+
+
+def _edge_near_hotspot(
+    points: List[Tuple[float, float]], zone: Dict[str, object], edge: Edge,
+) -> bool:
+    if not points:
+        # Old/custom networks without geometry can still use explicit road names.
+        name = (edge.road_name or "").lower()
+        return bool(name and zone["name"].lower() in name)
+    path = zone["path"]
+    radius = float(zone["radius_m"])
+    lat_pad = radius / 110_000.0
+    center_lat = sum(point[0] for point in path) / len(path)
+    lon_pad = radius / (111_000.0 * max(0.1, abs(cos(radians(center_lat)))))
+    if (
+        max(point[0] for point in points) < min(point[0] for point in path) - lat_pad
+        or min(point[0] for point in points) > max(point[0] for point in path) + lat_pad
+        or max(point[1] for point in points) < min(point[1] for point in path) - lon_pad
+        or min(point[1] for point in points) > max(point[1] for point in path) + lon_pad
+    ):
+        return False
+    if len(path) == 1:
+        axes = [(path[0], path[0])]
+    else:
+        axes = list(zip(path[:-1], path[1:]))
+    if len(points) == 1:
+        edge_segments = [(points[0], points[0])]
+    else:
+        edge_segments = list(zip(points[:-1], points[1:]))
+    return any(
+        _point_segment_distance_m(edge_start, zone_start, zone_end) <= radius
+        or _point_segment_distance_m(edge_end, zone_start, zone_end) <= radius
+        for edge_start, edge_end in edge_segments
+        for zone_start, zone_end in axes
+    )
+
+
+def hotspot_speed_multiplier(
+    edge: Edge,
+    departure_time: time | str | None,
+    graph: Optional[Graph] = None,
+    origin_node: Optional[str] = None,
+) -> float:
+    """Return the strongest applicable local hotspot slowdown, or 1.0."""
+    departure = normalize_departure_time(departure_time)
+    points = _edge_points(edge, graph, origin_node)
+
+    if departure < time(8, 0) or departure >= time(20, 30):
+        period = "night"
+    elif _MORNING_RUSH[0] <= departure < _MORNING_RUSH[1]:
+        period = "morning"
+    elif _SCHOOL_DISMISSAL[0] <= departure < _SCHOOL_DISMISSAL[1]:
+        period = "school"
+    elif _EVENING_RUSH[0] <= departure < _EVENING_RUSH[1]:
+        period = "evening"
+    else:
+        period = "normal"
+
+    multipliers = [
+        float(zone[period])
+        for zone in HOTSPOT_ZONES
+        if _edge_near_hotspot(points, zone, edge)
+    ]
+    return min(multipliers, default=1.0)
+
+
+def modeled_speed_factor(
+    edge: Edge,
+    departure_time: time | str | None,
+    graph: Optional[Graph] = None,
+    origin_node: Optional[str] = None,
+) -> float:
+    """Interpolate the baseline profile and apply only local hotspot effects."""
     group = road_traffic_group(edge)
     profile = HOURLY_SPEED_FACTORS[group]
     departure = normalize_departure_time(departure_time)
@@ -149,11 +293,12 @@ def modeled_speed_factor(edge: Edge, departure_time: time | str | None) -> float
     lower_hour = int(hour)
     upper_hour = (lower_hour + 1) % 24
     fraction = hour - lower_hour
-    return profile[lower_hour] + (profile[upper_hour] - profile[lower_hour]) * fraction
+    baseline = profile[lower_hour] + (profile[upper_hour] - profile[lower_hour]) * fraction
+    return baseline * hotspot_speed_multiplier(edge, departure, graph, origin_node)
 
 
-def get_traffic_level(edge: Edge, departure_time: time | str | None) -> str:
-    factor = modeled_speed_factor(edge, departure_time)
+def get_traffic_level(edge: Edge, departure_time: time | str | None, graph: Optional[Graph] = None, origin_node: Optional[str] = None) -> str:
+    factor = modeled_speed_factor(edge, departure_time, graph, origin_node)
     if factor <= TRAFFIC_LEVEL_THRESHOLDS[HIGH]:
         return HIGH
     if factor <= TRAFFIC_LEVEL_THRESHOLDS[MEDIUM]:
@@ -161,9 +306,9 @@ def get_traffic_level(edge: Edge, departure_time: time | str | None) -> str:
     return LOW
 
 
-def get_traffic_color(edge: Edge, departure_time: time | str | None) -> str:
+def get_traffic_color(edge: Edge, departure_time: time | str | None, graph: Optional[Graph] = None, origin_node: Optional[str] = None) -> str:
     """Return a smooth green-to-red color from the modeled speed factor."""
-    factor = modeled_speed_factor(edge, departure_time)
+    factor = modeled_speed_factor(edge, departure_time, graph, origin_node)
     green, yellow, red = (22, 163, 74), (234, 179, 8), (220, 38, 38)
     if factor >= 0.92:
         return "#16A34A"
@@ -179,27 +324,29 @@ def get_traffic_color(edge: Edge, departure_time: time | str | None) -> str:
     return "#" + "".join(f"{channel:02X}" for channel in rgb)
 
 
-def estimated_speed_kmh(edge: Edge, departure_time: time | str | None) -> float:
+def estimated_speed_kmh(edge: Edge, departure_time: time | str | None, graph: Optional[Graph] = None, origin_node: Optional[str] = None) -> float:
     road_class = classify_road(edge)
     base_speed = BASE_SPEEDS_KMH.get(road_class, BASE_SPEEDS_KMH["unknown"])
-    return base_speed * modeled_speed_factor(edge, departure_time)
+    return base_speed * modeled_speed_factor(edge, departure_time, graph, origin_node)
 
 
-def estimated_travel_time_seconds(edge: Edge, departure_time: time | str | None) -> float:
+def estimated_travel_time_seconds(edge: Edge, departure_time: time | str | None, graph: Optional[Graph] = None, origin_node: Optional[str] = None) -> float:
     """Estimated seconds for this edge; ``edge.weight`` remains physical meters."""
     if edge.weight <= 0:
         return 0.0
-    return edge.weight * 3.6 / estimated_speed_kmh(edge, departure_time)
+    return edge.weight * 3.6 / estimated_speed_kmh(edge, departure_time, graph, origin_node)
 
 
-def apply_traffic_mode(mode: Optional[str], departure_time: time | str | None = None) -> Optional[CostFunction]:
+def apply_traffic_mode(
+    mode: Optional[str], departure_time: time | str | None = None, graph: Optional[Graph] = None,
+) -> Optional[CostFunction]:
     """Return edge travel time in seconds for traffic-aware routing."""
     if mode != TRAFFIC_AWARE:
         return None
     departure = normalize_departure_time(departure_time)
 
-    def cost(_u: str, edge: Edge) -> float:
-        return estimated_travel_time_seconds(edge, departure)
+    def cost(u: str, edge: Edge) -> float:
+        return estimated_travel_time_seconds(edge, departure, graph=graph, origin_node=u)
 
     # A* can safely use straight-line distance / maximum possible speed.
     cost.heuristic_multiplier = 3.6 / MAX_MODELED_SPEED_KMH  # type: ignore[attr-defined]
@@ -248,11 +395,11 @@ def analyse_route(graph: Graph, path: List[str], mode: Optional[str], departure_
         edge = graph.get_edge(u, v)
         if edge is None:
             continue
-        level = get_traffic_level(edge, departure)
+        level = get_traffic_level(edge, departure, graph, u)
         counts[level] += 1
         dists[level] += edge.weight
         total_dist += edge.weight
-        total_time += estimated_travel_time_seconds(edge, departure)
+        total_time += estimated_travel_time_seconds(edge, departure, graph, u)
     return RouteTrafficInfo(mode, departure, total_dist, total_time, counts, dists)
 
 
@@ -281,8 +428,8 @@ def iter_colored_traffic_segments(
                 if origin is None or destination is None:
                     continue
                 points = [[origin[0], origin[1]], [destination[0], destination[1]]]
-            level = get_traffic_level(edge, departure_time)
-            groups[level].append((get_traffic_color(edge, departure_time), level, points))
+            level = get_traffic_level(edge, departure_time, graph, u)
+            groups[level].append((get_traffic_color(edge, departure_time, graph, u), level, points))
         return [segment for level in (HIGH, MEDIUM, LOW) for segment in groups[level]]
 
     if bounds is None:
@@ -305,8 +452,8 @@ def iter_colored_traffic_segments(
                 points = [[origin[0], origin[1]], [destination[0], destination[1]]]
             else:
                 continue
-            level = get_traffic_level(edge, departure_time)
-            groups[level].append((get_traffic_color(edge, departure_time), level, points))
+            level = get_traffic_level(edge, departure_time, graph, u)
+            groups[level].append((get_traffic_color(edge, departure_time, graph, u), level, points))
     remaining = max_segments
     selected = []
     for level in (HIGH, MEDIUM, LOW):

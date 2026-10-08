@@ -136,6 +136,7 @@ def init_session_state() -> None:
     preset_labels = {
         time(8, 30): "Morning Peak · 08:30",
         time(13, 0): "Midday · 01:00 PM",
+        time(14, 0): "School Dismissal · 02:00 PM",
         time(18, 0): "Evening Peak · 06:00 PM",
         time(22, 0): "Night · 10:00 PM",
     }
@@ -161,8 +162,6 @@ def compute_routes(is_realworld: bool) -> None:
     """
     mode = get_traffic_mode() if is_realworld else None
     departure = normalize_departure_time(st.session_state.get("departure_time"))
-    cost_fn = apply_traffic_mode(mode, departure)
-
     if is_realworld:
         graph = load_cached_osm_network()
         start_lat, start_lon = st.session_state.start_coords
@@ -172,6 +171,8 @@ def compute_routes(is_realworld: bool) -> None:
     else:
         graph = load_fictional_network()
         start_node, dest_node = st.session_state.start_name, st.session_state.dest_name
+
+    cost_fn = apply_traffic_mode(mode, departure, graph=graph)
 
     alts = find_alternative_routes(graph, start_node, dest_node, max_routes=3, cost_function=cost_fn)
     if alts:
@@ -232,6 +233,7 @@ def _apply_time_preset() -> None:
     presets = {
         "Morning Peak · 08:30": time(8, 30),
         "Midday · 01:00 PM": time(13, 0),
+        "School Dismissal · 02:00 PM": time(14, 0),
         "Evening Peak · 06:00 PM": time(18, 0),
         "Night · 10:00 PM": time(22, 0),
     }
@@ -256,6 +258,7 @@ def _apply_manual_departure_time() -> None:
     labels_by_time = {
         time(8, 30): "Morning Peak · 08:30",
         time(13, 0): "Midday · 01:00 PM",
+        time(14, 0): "School Dismissal · 02:00 PM",
         time(18, 0): "Evening Peak · 06:00 PM",
         time(22, 0): "Night · 10:00 PM",
     }
@@ -306,13 +309,13 @@ def render_traffic_controls(is_realworld: bool) -> None:
             with preset_col:
                 st.selectbox(
                     "Quick preset",
-                    ["Custom time", "Morning Peak · 08:30", "Midday · 01:00 PM", "Evening Peak · 06:00 PM", "Night · 10:00 PM"],
+                    ["Custom time", "Morning Peak · 08:30", "Midday · 01:00 PM", "School Dismissal · 02:00 PM", "Evening Peak · 06:00 PM", "Night · 10:00 PM"],
                     key="time_preset", on_change=_apply_time_preset,
                     help="Choose a typical time to quickly compare modeled traffic.",
                 )
             period = PERIOD_LABELS.get(get_traffic_period(st.session_state.departure_time), "")
             st.caption(f"{st.session_state.departure_time.strftime('%I:%M %p').lstrip('0')} · {period} · {TRAFFIC_ICONS[LOW]} Low  ·  {TRAFFIC_ICONS[MEDIUM]} Moderate  ·  {TRAFFIC_ICONS[HIGH]} High")
-            st.caption("Estimated from road type and time of day; traffic is not live.")
+            st.caption("Peak hotspots: Main Road · Lalpur · Ratu Road · Kantatoli · Booty More · Upper Bazar. Other roads keep the standard time model; estimates are not live.")
         notice = st.session_state.get("traffic_notice")
         mode = get_traffic_mode()
         if mode is None and notice is None:
