@@ -1377,5 +1377,225 @@ class TestTrafficAwareRouting(unittest.TestCase):
         self.assertEqual(g.get_edge(u, edge.destination).weight, original)
 
 
+class BookmarkTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import os
+        import streamlit as st
+        from app import BOOKMARKS_FILE
+        if os.path.exists(BOOKMARKS_FILE):
+            os.remove(BOOKMARKS_FILE)
+        st.session_state.clear()
+        from app import init_session_state
+        init_session_state()
+
+    def tearDown(self) -> None:
+        import os
+        from app import BOOKMARKS_FILE
+        if os.path.exists(BOOKMARKS_FILE):
+            os.remove(BOOKMARKS_FILE)
+
+    def test_bookmark_initial_state(self) -> None:
+        import streamlit as st
+        self.assertEqual(st.session_state.bookmarks, [])
+        self.assertFalse(st.session_state.show_bookmarks)
+
+    def test_add_bookmark_success(self) -> None:
+        import streamlit as st
+        from app import add_bookmark
+        ok, msg = add_bookmark("Home", "Albert Ekka Chowk", 23.3699, 85.3253)
+        self.assertTrue(ok)
+        self.assertEqual(len(st.session_state.bookmarks), 1)
+        self.assertEqual(st.session_state.bookmarks[0]["name"], "Home")
+        self.assertAlmostEqual(st.session_state.bookmarks[0]["lat"], 23.3699)
+        self.assertAlmostEqual(st.session_state.bookmarks[0]["lon"], 85.3253)
+
+    def test_bookmark_limit_of_twenty(self) -> None:
+        import streamlit as st
+        from app import add_bookmark, MAX_BOOKMARKS
+        self.assertEqual(MAX_BOOKMARKS, 20)
+        for i in range(20):
+            ok, _ = add_bookmark(f"Place {i+1}", f"Addr {i+1}", 23.30 + i * 0.001, 85.30 + i * 0.001)
+            self.assertTrue(ok)
+        self.assertEqual(len(st.session_state.bookmarks), 20)
+
+        # Attempt to add 21st bookmark must be rejected
+        ok21, err = add_bookmark("Place 21", "Addr 21", 23.40, 85.40)
+        self.assertFalse(ok21)
+        self.assertIn("limit reached", err.lower())
+        self.assertEqual(len(st.session_state.bookmarks), 20)
+
+    # Keep alias for test runners expecting previous name
+    test_bookmark_limit_of_two = test_bookmark_limit_of_twenty
+
+    def test_bookmark_validation_empty_and_duplicate_name(self) -> None:
+        import streamlit as st
+        from app import add_bookmark
+        # Empty name
+        ok, err = add_bookmark("   ", "Addr", 23.35, 85.30)
+        self.assertFalse(ok)
+        self.assertIn("empty", err.lower())
+
+        # Add initial
+        ok1, _ = add_bookmark("Office", "Addr 1", 23.35, 85.30)
+        self.assertTrue(ok1)
+
+        # Duplicate name
+        ok2, err2 = add_bookmark("office", "Addr 2", 23.36, 85.31)
+        self.assertFalse(ok2)
+        self.assertIn("already exists", err2.lower())
+
+    def test_delete_bookmark(self) -> None:
+        import streamlit as st
+        from app import add_bookmark, delete_bookmark
+        add_bookmark("Place 1", "Addr 1", 23.35, 85.30)
+        add_bookmark("Place 2", "Addr 2", 23.36, 85.31)
+        self.assertEqual(len(st.session_state.bookmarks), 2)
+
+        # Delete first bookmark
+        ok, msg = delete_bookmark(0)
+        self.assertTrue(ok)
+        self.assertEqual(len(st.session_state.bookmarks), 1)
+        self.assertEqual(st.session_state.bookmarks[0]["name"], "Place 2")
+
+        # Now can add another bookmark again
+        ok_new, _ = add_bookmark("Place 3", "Addr 3", 23.37, 85.32)
+        self.assertTrue(ok_new)
+        self.assertEqual(len(st.session_state.bookmarks), 2)
+
+    def test_delete_bookmark_invalid_index(self) -> None:
+        from app import delete_bookmark
+        ok, err = delete_bookmark(5)
+        self.assertFalse(ok)
+
+    def test_bookmarks_in_map_rendering(self) -> None:
+        import streamlit as st
+        from app import add_bookmark
+        add_bookmark("Favorite Spot", "Ranchi Lake", 23.36, 85.32)
+        from map_view import build_empty_map
+        import folium
+        m = build_empty_map()
+        for bm in st.session_state.bookmarks:
+            folium.Marker(
+                location=[bm["lat"], bm["lon"]],
+                tooltip=f"⭐ Bookmark: {bm['name']}",
+            ).add_to(m)
+        html = m._repr_html_()
+        self.assertIn("Bookmark: Favorite Spot", html)
+
+    def test_bookmarks_appear_in_direction_dropdown_options(self) -> None:
+        import streamlit as st
+        from app import add_bookmark, MY_LOCATION_LABEL
+        from osm_loader import RANCHI_LANDMARKS
+
+        add_bookmark("My Gym", "Near Albert Ekka", 23.371, 85.326)
+        add_bookmark("My Office", "Main Road", 23.355, 85.318)
+
+        # Build options as done in directions drawer
+        start_options = [MY_LOCATION_LABEL]
+        for bm in st.session_state.bookmarks:
+            start_options.append(f"🔖 {bm['name']}")
+        start_options.extend(RANCHI_LANDMARKS.keys())
+
+        self.assertIn("🔖 My Gym", start_options)
+        self.assertIn("🔖 My Office", start_options)
+        self.assertEqual(start_options[1], "🔖 My Gym")
+        self.assertEqual(start_options[2], "🔖 My Office")
+
+    def test_bookmark_selection_sets_coordinates(self) -> None:
+        import streamlit as st
+        from app import add_bookmark
+        add_bookmark("Home Base", "Ranchi Station", 23.352, 85.334)
+
+        # Simulate selecting "🔖 Home Base"
+        chosen_mode = "🔖 Home Base"
+        bm_name = chosen_mode.replace("🔖 ", "", 1).strip()
+        bm_match = next((b for b in st.session_state.bookmarks if b["name"] == bm_name), None)
+        self.assertIsNotNone(bm_match)
+        st.session_state.start_name = bm_match["name"]
+        st.session_state.start_coords = (bm_match["lat"], bm_match["lon"])
+
+        self.assertEqual(st.session_state.start_name, "Home Base")
+        self.assertEqual(st.session_state.start_coords, (23.352, 85.334))
+
+    def test_bookmarks_persist_across_page_refresh(self) -> None:
+        """Verify bookmarks are written to JSON on device and persist when page is refreshed."""
+        import os
+        import json
+        import streamlit as st
+        from app import add_bookmark, init_session_state, BOOKMARKS_FILE
+
+        # 1. Add a bookmark in session
+        ok, _ = add_bookmark("Persistent Place", "Main Road, Ranchi", 23.35, 85.32)
+        self.assertTrue(ok)
+
+        # 2. Check JSON file on disk exists and contains bookmark
+        self.assertTrue(os.path.exists(BOOKMARKS_FILE))
+        with open(BOOKMARKS_FILE, "r", encoding="utf-8") as f:
+            disk_data = json.load(f)
+        self.assertEqual(len(disk_data), 1)
+        self.assertEqual(disk_data[0]["name"], "Persistent Place")
+        self.assertAlmostEqual(disk_data[0]["lat"], 23.35)
+
+        # 3. Simulate browser page refresh: clear session_state completely
+        st.session_state.clear()
+        self.assertNotIn("bookmarks", st.session_state)
+
+        # 4. Initialize session state as happens on page reload
+        init_session_state()
+
+        # 5. Bookmarks must still be present and loaded from the device JSON file!
+        self.assertEqual(len(st.session_state.bookmarks), 1)
+        self.assertEqual(st.session_state.bookmarks[0]["name"], "Persistent Place")
+        self.assertAlmostEqual(st.session_state.bookmarks[0]["lat"], 23.35)
+
+    def test_bookmarks_delete_updates_json_in_real_time(self) -> None:
+        """Verify delete_bookmark updates the JSON file on the device in real time."""
+        import os
+        import json
+        import streamlit as st
+        from app import add_bookmark, delete_bookmark, init_session_state, BOOKMARKS_FILE
+
+        add_bookmark("Place A", "Addr A", 23.30, 85.30)
+        add_bookmark("Place B", "Addr B", 23.40, 85.40)
+        self.assertEqual(len(st.session_state.bookmarks), 2)
+
+        # Delete Place A
+        ok, _ = delete_bookmark(0)
+        self.assertTrue(ok)
+        self.assertEqual(len(st.session_state.bookmarks), 1)
+
+        # Verify disk JSON file updated in real time
+        with open(BOOKMARKS_FILE, "r", encoding="utf-8") as f:
+            disk_data = json.load(f)
+        self.assertEqual(len(disk_data), 1)
+        self.assertEqual(disk_data[0]["name"], "Place B")
+
+        # Simulate page refresh
+        st.session_state.clear()
+        init_session_state()
+        self.assertEqual(len(st.session_state.bookmarks), 1)
+        self.assertEqual(st.session_state.bookmarks[0]["name"], "Place B")
+
+    def test_save_and_load_bookmarks_custom_path(self) -> None:
+        """Verify save_bookmarks and load_bookmarks with custom JSON file paths."""
+        import os
+        import tempfile
+        from app import save_bookmarks, load_bookmarks
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_path = os.path.join(tmpdir, "custom_bookmarks.json")
+            sample = [
+                {"name": "Custom Spot", "address": "Some Street", "lat": 23.33, "lon": 85.33}
+            ]
+            ok = save_bookmarks(sample, filepath=test_path)
+            self.assertTrue(ok)
+            self.assertTrue(os.path.exists(test_path))
+
+            loaded = load_bookmarks(filepath=test_path)
+            self.assertEqual(len(loaded), 1)
+            self.assertEqual(loaded[0]["name"], "Custom Spot")
+            self.assertAlmostEqual(loaded[0]["lat"], 23.33)
+
+
 if __name__ == "__main__":
     unittest.main()

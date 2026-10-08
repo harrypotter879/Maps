@@ -18,10 +18,13 @@ Features:
 
 from __future__ import annotations
 import hashlib
+import json
 import math
+import os
 from datetime import time
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
+import folium
 import streamlit as st
 from streamlit_folium import st_folium
 
@@ -39,6 +42,100 @@ from traffic import (
 )
 
 MY_LOCATION_LABEL = "🔵 My Current Location"
+MAX_BOOKMARKS = 20
+
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+BOOKMARKS_FILE = os.path.join(DATA_DIR, "bookmarks.json")
+
+
+def load_bookmarks(filepath: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Load saved bookmarks from JSON file on the user's device."""
+    target_path = filepath or BOOKMARKS_FILE
+    if not os.path.exists(target_path):
+        return []
+    try:
+        with open(target_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            valid_bms: List[Dict[str, Any]] = []
+            for item in data[:MAX_BOOKMARKS]:
+                if isinstance(item, dict) and "name" in item and "lat" in item and "lon" in item:
+                    valid_bms.append({
+                        "name": str(item["name"]).strip(),
+                        "address": str(item.get("address", item["name"])).strip(),
+                        "lat": float(item["lat"]),
+                        "lon": float(item["lon"]),
+                    })
+            return valid_bms
+    except Exception as e:
+        print(f"Error loading bookmarks from {target_path}: {e}")
+    return []
+
+
+def save_bookmarks(bookmarks: List[Dict[str, Any]], filepath: Optional[str] = None) -> bool:
+    """Save bookmarks in JSON format on the user's device in real time."""
+    target_path = filepath or BOOKMARKS_FILE
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
+        with open(target_path, "w", encoding="utf-8") as f:
+            json.dump(bookmarks[:MAX_BOOKMARKS], f, indent=2, ensure_ascii=False)
+        return True
+    except Exception as e:
+        print(f"Error saving bookmarks to {target_path}: {e}")
+        return False
+
+
+def add_bookmark(name: str, address: str, lat: float, lon: float, filepath: Optional[str] = None) -> Tuple[bool, str]:
+    """Add a new bookmark, enforcing the maximum limit of 20 bookmarks and saving to JSON on device in real time."""
+    if "bookmarks" not in st.session_state:
+        st.session_state.bookmarks = load_bookmarks(filepath)
+
+    if len(st.session_state.bookmarks) >= MAX_BOOKMARKS:
+        return False, f"Bookmark limit reached (maximum {MAX_BOOKMARKS} allowed). Delete an existing bookmark to add a new one."
+
+    cleaned_name = name.strip()
+    if not cleaned_name:
+        return False, "Bookmark name cannot be empty."
+
+    if any(b.get("name", "").lower() == cleaned_name.lower() for b in st.session_state.bookmarks):
+        return False, f"A bookmark named '{cleaned_name}' already exists. Please choose a different name."
+
+    try:
+        lat_f = float(lat)
+        lon_f = float(lon)
+    except (ValueError, TypeError):
+        return False, "Invalid GPS coordinates for bookmark."
+
+    new_bm = {
+        "name": cleaned_name,
+        "address": address.strip() if address else cleaned_name,
+        "lat": lat_f,
+        "lon": lon_f,
+    }
+    st.session_state.bookmarks.append(new_bm)
+    # Persist in JSON format on the user's device in real time
+    save_bookmarks(st.session_state.bookmarks, filepath)
+    return True, f"Bookmark '{cleaned_name}' saved to device."
+
+
+def delete_bookmark(index: int, filepath: Optional[str] = None) -> Tuple[bool, str]:
+    """Delete a bookmark at the specified index and update JSON file on device in real time."""
+    if "bookmarks" not in st.session_state:
+        st.session_state.bookmarks = load_bookmarks(filepath)
+
+    if not (0 <= index < len(st.session_state.bookmarks)):
+        return False, "Invalid bookmark index."
+
+    deleted = st.session_state.bookmarks.pop(index)
+    # Update JSON file on the user's device in real time
+    save_bookmarks(st.session_state.bookmarks, filepath)
+    return True, f"Bookmark '{deleted.get('name', 'selected')}' deleted."
+
+
+def get_bookmarks() -> List[Dict[str, Any]]:
+    """Return the list of saved bookmarks in session state."""
+    return st.session_state.get("bookmarks", [])
+
 
 # Page Configuration - Collapsed sidebar gives full width to the map!
 st.set_page_config(
@@ -110,6 +207,12 @@ def init_session_state() -> None:
     # Route menu drawer is closed by default at startup!
     if "show_route_menu" not in st.session_state:
         st.session_state.show_route_menu = False
+
+    # Bookmarks panel persists on user device in JSON format across refreshes (max 20)
+    if "bookmarks" not in st.session_state:
+        st.session_state.bookmarks = load_bookmarks()
+    if "show_bookmarks" not in st.session_state:
+        st.session_state.show_bookmarks = False
 
     if "last_clicked_coords" not in st.session_state:
         st.session_state.last_clicked_coords = None
@@ -442,12 +545,31 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
             departure_time=st.session_state.departure_time,
         )
 
+    # Add visual bookmark markers to map
+    for bm in st.session_state.get("bookmarks", []):
+        folium.Marker(
+            location=[bm["lat"], bm["lon"]],
+            popup=folium.Popup(
+                f"<div style='font-family: Arial, sans-serif; min-width: 150px;'>"
+                f"<h4 style='margin: 0 0 4px 0; color: #D97706;'>⭐ {bm['name']}</h4>"
+                f"<b>{bm.get('address', '')}</b><br>"
+                f"<span style='font-size: 11px; color: #666;'>Lat: {bm['lat']:.5f}, Lon: {bm['lon']:.5f}</span>"
+                f"</div>",
+                max_width=250,
+            ),
+            tooltip=f"⭐ Bookmark: {bm['name']}",
+            icon=folium.Icon(color="orange", icon="star", prefix="fa"),
+        ).add_to(folium_map)
+
     route_signature = "-".join(str(node) for node in primary_result.path) if primary_result and primary_result.found else "preview"
+    bm_signature = "-".join(f"{b['name']}:{b['lat']:.4f},{b['lon']:.4f}" for b in st.session_state.get("bookmarks", []))
     map_signature = "|".join((
         "drawer" if st.session_state.show_route_menu else "full",
+        "bm_panel" if st.session_state.get("show_bookmarks") else "no_bm",
         route_signature,
         get_traffic_mode() or "distance",
         st.session_state.departure_time.strftime("%H:%M"),
+        bm_signature,
     ))
     map_data = st_folium(
         folium_map,
@@ -461,8 +583,9 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
     if map_data and map_data.get("last_clicked"):
         click_lat = map_data["last_clicked"]["lat"]
         click_lon = map_data["last_clicked"]["lng"]
+        st.session_state.last_clicked_coords = (click_lat, click_lon)
         st.info(f"🖱️ **Map Click Detected:** `Latitude: {click_lat:.5f}, Longitude: {click_lon:.5f}`")
-        col_c1, col_c2, col_c3 = st.columns([1.3, 1.3, 1.4])
+        col_c1, col_c2, col_c3, col_c4 = st.columns([1.1, 1.1, 1.1, 1.1])
         with col_c1:
             if st.button("📍 Set as Start & Open Go", key="btn_click_start"):
                 st.session_state.start_name = reverse_geocode(click_lat, click_lon)
@@ -483,6 +606,404 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
                 st.session_state.my_location = (click_lat, click_lon, loc_label)
                 st.session_state.searched_location = st.session_state.my_location
                 st.rerun()
+        with col_c4:
+            if st.button("🔖 Bookmark Location", key="btn_click_bookmark"):
+                st.session_state.show_bookmarks = True
+                st.rerun()
+
+
+def render_directions_drawer(is_realworld: bool) -> None:
+    """Render the sliding directions drawer on the left side."""
+    head_col1, head_col2 = st.columns([4, 1])
+    with head_col1:
+        st.markdown("### 🧭 Directions")
+    with head_col2:
+        if st.button("✕", key="btn_close_drawer", help="Close directions menu"):
+            st.session_state.show_route_menu = False
+            st.rerun()
+
+    if is_realworld:
+        bookmarks = st.session_state.get("bookmarks", [])
+        start_custom_label = f"📍 {st.session_state.start_name}" if (
+            st.session_state.start_name
+            and st.session_state.start_name != MY_LOCATION_LABEL
+            and st.session_state.start_name not in RANCHI_LANDMARKS
+            and not any(bm["name"] == st.session_state.start_name for bm in bookmarks)
+        ) else None
+
+        start_options = [MY_LOCATION_LABEL]
+        for bm in bookmarks:
+            start_options.append(f"🔖 {bm['name']}")
+        if start_custom_label:
+            start_options.append(start_custom_label)
+        start_options.append("🔍 Search Address / Custom Place...")
+        start_options.extend(RANCHI_LANDMARKS.keys())
+
+        # From (Origin)
+        st.markdown("**From (Origin):**")
+        if start_custom_label and start_custom_label in start_options:
+            curr_start_idx = start_options.index(start_custom_label)
+        elif f"🔖 {st.session_state.start_name}" in start_options:
+            curr_start_idx = start_options.index(f"🔖 {st.session_state.start_name}")
+        elif st.session_state.start_name in start_options:
+            curr_start_idx = start_options.index(st.session_state.start_name)
+        else:
+            curr_start_idx = 0
+
+        start_mode = st.selectbox(
+            "Origin",
+            start_options,
+            index=curr_start_idx,
+            key="drawer_start_select",
+            label_visibility="collapsed",
+        )
+        if start_mode == MY_LOCATION_LABEL:
+            st.session_state.start_name = MY_LOCATION_LABEL
+            st.session_state.start_coords = (st.session_state.my_location[0], st.session_state.my_location[1])
+        elif start_mode.startswith("🔖 "):
+            bm_name = start_mode.replace("🔖 ", "", 1).strip()
+            bm_match = next((b for b in bookmarks if b["name"] == bm_name), None)
+            if bm_match:
+                st.session_state.start_name = bm_match["name"]
+                st.session_state.start_coords = (bm_match["lat"], bm_match["lon"])
+        elif start_mode == start_custom_label:
+            # Keep existing custom coordinates and name
+            pass
+        elif start_mode == "🔍 Search Address / Custom Place...":
+            start_query = st.text_input(
+                "Search Origin",
+                value=st.session_state.start_name if st.session_state.start_name not in RANCHI_LANDMARKS and st.session_state.start_name != MY_LOCATION_LABEL and not any(bm["name"] == st.session_state.start_name for bm in bookmarks) else "",
+                placeholder="Type address or GPS coordinates...",
+                key="drawer_start_query",
+                label_visibility="collapsed",
+            )
+            if start_query.strip():
+                sugs = search_locations(start_query.strip(), limit=8)
+                if sugs:
+                    chosen_s = st.selectbox(
+                        "Matches",
+                        options=sugs,
+                        format_func=lambda s: f"📍 {s.format_display_label()}",
+                        key="drawer_chosen_start_sug",
+                        label_visibility="collapsed",
+                    )
+                    st.session_state.start_name = chosen_s.name
+                    st.session_state.start_coords = (chosen_s.lat, chosen_s.lon)
+        else:
+            st.session_state.start_name = start_mode
+            st.session_state.start_coords = RANCHI_LANDMARKS[start_mode]
+
+        st.caption(f"📍 `{st.session_state.start_coords[0]:.4f}, {st.session_state.start_coords[1]:.4f}`")
+
+        # Swap button
+        col_swap, _ = st.columns([1.5, 1])
+        with col_swap:
+            st.button("⇄ Swap Start & Dest", on_click=swap_locations, use_container_width=True)
+
+        # Build Destination options list, including bookmarks
+        dest_custom_label = f"🎯 {st.session_state.dest_name}" if (
+            st.session_state.dest_name
+            and st.session_state.dest_name != MY_LOCATION_LABEL
+            and st.session_state.dest_name not in RANCHI_LANDMARKS
+            and not any(bm["name"] == st.session_state.dest_name for bm in bookmarks)
+        ) else None
+
+        dest_options = [MY_LOCATION_LABEL]
+        for bm in bookmarks:
+            dest_options.append(f"🔖 {bm['name']}")
+        if dest_custom_label:
+            dest_options.append(dest_custom_label)
+        dest_options.append("🔍 Search Address / Custom Place...")
+        dest_options.extend(RANCHI_LANDMARKS.keys())
+
+        # To (Destination)
+        st.markdown("**To (Destination):**")
+        if dest_custom_label and dest_custom_label in dest_options:
+            curr_dest_idx = dest_options.index(dest_custom_label)
+        elif f"🔖 {st.session_state.dest_name}" in dest_options:
+            curr_dest_idx = dest_options.index(f"🔖 {st.session_state.dest_name}")
+        elif st.session_state.dest_name in dest_options:
+            curr_dest_idx = dest_options.index(st.session_state.dest_name)
+        else:
+            curr_dest_idx = min(3, len(dest_options) - 1)
+
+        dest_mode = st.selectbox(
+            "Destination",
+            dest_options,
+            index=curr_dest_idx,
+            key="drawer_dest_select",
+            label_visibility="collapsed",
+        )
+        if dest_mode == MY_LOCATION_LABEL:
+            st.session_state.dest_name = MY_LOCATION_LABEL
+            st.session_state.dest_coords = (st.session_state.my_location[0], st.session_state.my_location[1])
+        elif dest_mode.startswith("🔖 "):
+            bm_name = dest_mode.replace("🔖 ", "", 1).strip()
+            bm_match = next((b for b in bookmarks if b["name"] == bm_name), None)
+            if bm_match:
+                st.session_state.dest_name = bm_match["name"]
+                st.session_state.dest_coords = (bm_match["lat"], bm_match["lon"])
+        elif dest_mode == dest_custom_label:
+            # Keep existing custom coordinates and name
+            pass
+        elif dest_mode == "🔍 Search Address / Custom Place...":
+            dest_query = st.text_input(
+                "Search Destination",
+                value=st.session_state.dest_name if st.session_state.dest_name not in RANCHI_LANDMARKS and st.session_state.dest_name != MY_LOCATION_LABEL and not any(bm["name"] == st.session_state.dest_name for bm in bookmarks) else "",
+                placeholder="Type address or GPS coordinates...",
+                key="drawer_dest_query",
+                label_visibility="collapsed",
+            )
+            if dest_query.strip():
+                sugs = search_locations(dest_query.strip(), limit=8)
+                if sugs:
+                    chosen_d = st.selectbox(
+                        "Matches",
+                        options=sugs,
+                        format_func=lambda s: f"🎯 {s.format_display_label()}",
+                        key="drawer_chosen_dest_sug",
+                        label_visibility="collapsed",
+                    )
+                    st.session_state.dest_name = chosen_d.name
+                    st.session_state.dest_coords = (chosen_d.lat, chosen_d.lon)
+        else:
+            st.session_state.dest_name = dest_mode
+            st.session_state.dest_coords = RANCHI_LANDMARKS[dest_mode]
+
+        st.caption(f"🎯 `{st.session_state.dest_coords[0]:.4f}, {st.session_state.dest_coords[1]:.4f}`")
+
+    else:
+        # Fictional towns
+        fict_graph = load_fictional_network()
+        fict_nodes = fict_graph.get_nodes()
+        st.session_state.start_name = st.selectbox("From (Town)", fict_nodes, index=0)
+        if st.button("⇄ Swap", on_click=swap_locations, use_container_width=True):
+            pass
+        st.session_state.dest_name = st.selectbox("To (Town)", fict_nodes, index=min(3, len(fict_nodes)-1))
+
+    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+    find_route_clicked = st.button("🚀 Find Route", type="primary", use_container_width=True, key="btn_find_route_action")
+    if find_route_clicked:
+        st.session_state.traffic_notice = None
+        if is_realworld:
+            try:
+                with st.spinner("Finding optimal route..."):
+                    compute_routes(is_realworld)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error mapping coordinates: {e}")
+        else:
+            compute_routes(is_realworld)
+            st.rerun()
+
+
+def render_bookmarks_panel(is_realworld: bool) -> None:
+    """Render the collapsible Bookmarks panel on the right side of the layout."""
+    bookmarks = st.session_state.get("bookmarks", [])
+    count = len(bookmarks)
+
+    head_col1, head_col2 = st.columns([4, 1])
+    with head_col1:
+        st.markdown(
+            f"### 🔖 Bookmarks <span style='font-size:14px; font-weight:normal; color:#4B5563;'>({count}/{MAX_BOOKMARKS})</span>",
+            unsafe_allow_html=True,
+        )
+    with head_col2:
+        if st.button("✕", key="btn_close_bookmarks_panel", help="Close bookmarks panel"):
+            st.session_state.show_bookmarks = False
+            st.rerun()
+
+    st.caption(f"Save up to {MAX_BOOKMARKS} favorite places. Bookmarks automatically appear in the dropdowns.")
+
+    # ── 1. Dropdown showing saved bookmarks ──
+    st.markdown("#### 📑 Saved Bookmarks Dropdown")
+    if bookmarks:
+        bm_display_options = [f"⭐ {bm['name']} ({bm.get('address', '')})" for bm in bookmarks]
+        selected_bm_idx = st.selectbox(
+            "Bookmarks Dropdown:",
+            options=list(range(len(bookmarks))),
+            format_func=lambda i: bm_display_options[i],
+            key="bookmarks_panel_dropdown",
+            label_visibility="collapsed",
+        )
+        selected_bm = bookmarks[selected_bm_idx]
+        st.markdown(
+            f"""
+            <div style="background:#FEF9C3; border:1px solid #FDE047; border-radius:8px; padding:10px 12px; margin-top:4px; margin-bottom:8px;">
+                <b style="color:#854D0E;">⭐ {selected_bm['name']}</b><br>
+                <span style="font-size:12px; color:#713F12;">{selected_bm.get('address', '')}</span><br>
+                <code style="font-size:11px; color:#A16207;">Lat: {selected_bm['lat']:.4f}, Lon: {selected_bm['lon']:.4f}</code>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        col_q1, col_q2 = st.columns(2)
+        with col_q1:
+            if st.button("🚩 Set as Start", key=f"btn_bm_start_{selected_bm_idx}", use_container_width=True):
+                st.session_state.start_name = selected_bm["name"]
+                st.session_state.start_coords = (selected_bm["lat"], selected_bm["lon"])
+                st.session_state.show_route_menu = True
+                st.session_state.route_result = None
+                st.rerun()
+        with col_q2:
+            if st.button("🏁 Set as Dest", key=f"btn_bm_dest_{selected_bm_idx}", use_container_width=True):
+                st.session_state.dest_name = selected_bm["name"]
+                st.session_state.dest_coords = (selected_bm["lat"], selected_bm["lon"])
+                st.session_state.show_route_menu = True
+                st.session_state.route_result = None
+                st.rerun()
+    else:
+        st.info(f"No bookmarks yet. Add up to {MAX_BOOKMARKS} bookmarks below!")
+
+    # ── 2. Manage Bookmarks list with Delete buttons ──
+    if bookmarks:
+        st.markdown("##### 📍 Manage Saved Places")
+        for idx, bm in enumerate(bookmarks):
+            col_info, col_del = st.columns([3.0, 1.2])
+            with col_info:
+                st.markdown(f"**{idx+1}. ⭐ {bm['name']}**")
+                st.caption(f"{bm.get('address', '')}")
+            with col_del:
+                if st.button("🗑️ Delete", key=f"btn_del_bm_item_{idx}", use_container_width=True):
+                    ok, msg = delete_bookmark(idx)
+                    if ok:
+                        st.toast(f"🗑️ {msg}", icon="🗑️")
+                    st.rerun()
+
+    # ── 3. Add Bookmark Form with Limit Enforcement ──
+    st.markdown("---")
+    st.markdown("#### ➕ Add New Bookmark")
+    if count >= MAX_BOOKMARKS:
+        st.warning(f"⚠️ Bookmark limit reached ({MAX_BOOKMARKS}/{MAX_BOOKMARKS}). Delete an existing bookmark to add a new one.")
+    else:
+        new_name = st.text_input(
+            "Bookmark Name:",
+            placeholder="e.g. Home, Office, Gym, Favorite Cafe...",
+            key="input_new_bookmark_name",
+        )
+
+        source_choices = ["📍 Ranchi Landmark", "🔍 Search Address", "🔵 Current Location"]
+        if st.session_state.get("last_clicked_coords"):
+            source_choices.append("🖱️ Last Clicked Map Point")
+
+        source_type = st.radio(
+            "Location Source:",
+            source_choices,
+            key="radio_bm_source_type",
+            horizontal=True,
+        )
+
+        cand_lat: Optional[float] = None
+        cand_lon: Optional[float] = None
+        cand_addr: str = ""
+
+        if source_type == "📍 Ranchi Landmark":
+            chosen_landmark = st.selectbox(
+                "Choose Landmark:",
+                options=sorted(list(RANCHI_LANDMARKS.keys())),
+                key="select_bm_landmark",
+            )
+            if chosen_landmark:
+                cand_lat, cand_lon = RANCHI_LANDMARKS[chosen_landmark]
+                cand_addr = chosen_landmark
+        elif source_type == "🔍 Search Address":
+            search_query = st.text_input(
+                "Search place/address:",
+                placeholder="Type location name or address...",
+                key="input_bm_search_addr",
+            )
+            if search_query.strip():
+                sugs = search_locations(search_query.strip(), limit=5)
+                if sugs:
+                    chosen_sug = st.selectbox(
+                        "Suggestions:",
+                        options=sugs,
+                        format_func=lambda s: f"📍 {s.format_display_label()}",
+                        key="select_bm_search_sug",
+                    )
+                    if chosen_sug:
+                        cand_lat, cand_lon = chosen_sug.lat, chosen_sug.lon
+                        cand_addr = chosen_sug.name
+                else:
+                    st.caption("No matching places found.")
+        elif source_type == "🔵 Current Location":
+            cand_lat, cand_lon, cand_addr = st.session_state.my_location
+            st.caption(f"Using My Location: **{cand_addr}** (`{cand_lat:.4f}, {cand_lon:.4f}`)")
+        elif source_type == "🖱️ Last Clicked Map Point":
+            if st.session_state.get("last_clicked_coords"):
+                cand_lat, cand_lon = st.session_state.last_clicked_coords
+                cand_addr = reverse_geocode(cand_lat, cand_lon)
+                st.caption(f"Using Clicked Point: **{cand_addr}** (`{cand_lat:.4f}, {cand_lon:.4f}`)")
+
+        if cand_lat is not None and cand_lon is not None:
+            st.caption(f"Coordinates: `{cand_lat:.5f}, {cand_lon:.5f}`")
+
+        if st.button("➕ Add Bookmark", type="primary", use_container_width=True, key="btn_submit_add_bm"):
+            if not new_name.strip():
+                st.error("Please enter a bookmark name.")
+            elif cand_lat is None or cand_lon is None:
+                st.error("Please select a valid location for the bookmark.")
+            else:
+                ok, msg = add_bookmark(new_name.strip(), cand_addr or new_name.strip(), cand_lat, cand_lon)
+                if ok:
+                    st.toast(f"✅ {msg}", icon="🔖")
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+    # ── 4. JSON Device Storage (Persisted across refreshes) ──
+    st.markdown("---")
+    st.markdown("#### 💾 Device JSON Storage")
+    st.caption("📁 Auto-saved in real time to: `data/bookmarks.json` on your device.")
+
+    json_payload = json.dumps(bookmarks, indent=2, ensure_ascii=False)
+    col_export, col_import_btn = st.columns(2)
+    with col_export:
+        st.download_button(
+            label="📥 Export JSON",
+            data=json_payload,
+            file_name="bookmarks.json",
+            mime="application/json",
+            use_container_width=True,
+            help="Download bookmarks.json to your device",
+            key="btn_download_bm_json",
+        )
+    with col_import_btn:
+        if st.button("📤 Import JSON", use_container_width=True, key="btn_toggle_import_bm"):
+            st.session_state.show_bm_importer = not st.session_state.get("show_bm_importer", False)
+            st.rerun()
+
+    if st.session_state.get("show_bm_importer", False):
+        uploaded_file = st.file_uploader(
+            "Select bookmarks.json from your device:",
+            type=["json"],
+            key="bm_file_uploader",
+        )
+        if uploaded_file is not None:
+            try:
+                imported_data = json.load(uploaded_file)
+                if isinstance(imported_data, list):
+                    valid_imported = []
+                    for item in imported_data[:MAX_BOOKMARKS]:
+                        if isinstance(item, dict) and "name" in item and "lat" in item and "lon" in item:
+                            valid_imported.append({
+                                "name": str(item["name"]).strip(),
+                                "address": str(item.get("address", item["name"])).strip(),
+                                "lat": float(item["lat"]),
+                                "lon": float(item["lon"]),
+                            })
+                    if valid_imported:
+                        st.session_state.bookmarks = valid_imported
+                        save_bookmarks(st.session_state.bookmarks)
+                        st.session_state.show_bm_importer = False
+                        st.toast(f"✅ Imported {len(valid_imported)} bookmark(s) from JSON!", icon="📥")
+                        st.rerun()
+                    else:
+                        st.error("No valid bookmarks found in JSON file.")
+                else:
+                    st.error("JSON file must contain a list of bookmark objects.")
+            except Exception as e:
+                st.error(f"Error parsing JSON: {e}")
 
 
 def main() -> None:
@@ -655,7 +1176,10 @@ def main() -> None:
             st.info("💡 **Set your location:** Choose your area from the dropdown, search any place, or click anywhere on the map below!")
             col_preset, col_custom_search = st.columns([1.5, 2.5])
             with col_preset:
-                preset_choices = ["-- Select your neighborhood / area --"] + sorted(list(RANCHI_LANDMARKS.keys()))
+                preset_choices = ["-- Select your neighborhood / area --"]
+                for bm in st.session_state.get("bookmarks", []):
+                    preset_choices.append(f"⭐ Bookmark: {bm['name']}")
+                preset_choices.extend(sorted(list(RANCHI_LANDMARKS.keys())))
                 chosen_preset = st.selectbox(
                     "Quick Area Select:",
                     preset_choices,
@@ -663,9 +1187,16 @@ def main() -> None:
                 )
                 if chosen_preset and chosen_preset != "-- Select your neighborhood / area --":
                     if st.button(f"🔵 Set to {chosen_preset}", key="btn_set_preset_loc", use_container_width=True):
-                        coords = RANCHI_LANDMARKS[chosen_preset]
-                        st.session_state.my_location = (coords[0], coords[1], chosen_preset)
-                        st.session_state.searched_location = st.session_state.my_location
+                        if chosen_preset.startswith("⭐ Bookmark: "):
+                            bm_name = chosen_preset.replace("⭐ Bookmark: ", "")
+                            bm_match = next((b for b in st.session_state.get("bookmarks", []) if b["name"] == bm_name), None)
+                            if bm_match:
+                                st.session_state.my_location = (bm_match["lat"], bm_match["lon"], bm_match["name"])
+                                st.session_state.searched_location = st.session_state.my_location
+                        else:
+                            coords = RANCHI_LANDMARKS[chosen_preset]
+                            st.session_state.my_location = (coords[0], coords[1], chosen_preset)
+                            st.session_state.searched_location = st.session_state.my_location
                         st.session_state.show_location_picker = False
                         st.toast(f"✅ Set My Location to '{chosen_preset}'!", icon="🔵")
                         st.rerun()
@@ -788,185 +1319,54 @@ def main() -> None:
     elif primary_result and not primary_result.found:
         st.error(f"❌ No route found between '{st.session_state.start_name}' and '{st.session_state.dest_name}'.")
 
-    # ── Main Area: Sliding Route Drawer vs Full-Width Map ─────────────────
-    if st.session_state.show_route_menu:
-        col_menu, col_map = st.columns([1.1, 2.9], gap="medium")
+    # ── Main Area: Directions Drawer (Left), Map (Center), Bookmarks Panel (Right) ──
+    show_left = st.session_state.show_route_menu
+    show_right = st.session_state.show_bookmarks
 
-        # Sliding Directions Drawer on Left
+    if show_left and show_right:
+        col_menu, col_map, col_bmarks = st.columns([1.1, 1.8, 1.1], gap="medium")
         with col_menu:
-            head_col1, head_col2 = st.columns([4, 1])
-            with head_col1:
-                st.markdown("### 🧭 Directions")
-            with head_col2:
-                if st.button("✕", key="btn_close_drawer", help="Close directions menu"):
-                    st.session_state.show_route_menu = False
-                    st.rerun()
-
-            if is_realworld:
-                # Build Origin options list, preserving custom/searched location if active
-                start_custom_label = f"📍 {st.session_state.start_name}" if (
-                    st.session_state.start_name
-                    and st.session_state.start_name != MY_LOCATION_LABEL
-                    and st.session_state.start_name not in RANCHI_LANDMARKS
-                ) else None
-
-                start_options = [MY_LOCATION_LABEL]
-                if start_custom_label:
-                    start_options.append(start_custom_label)
-                start_options.append("🔍 Search Address / Custom Place...")
-                start_options.extend(RANCHI_LANDMARKS.keys())
-
-                # From (Origin)
-                st.markdown("**From (Origin):**")
-                if start_custom_label:
-                    curr_start_idx = start_options.index(start_custom_label)
-                elif st.session_state.start_name in start_options:
-                    curr_start_idx = start_options.index(st.session_state.start_name)
-                else:
-                    curr_start_idx = 0
-
-                start_mode = st.selectbox(
-                    "Origin",
-                    start_options,
-                    index=curr_start_idx,
-                    key="drawer_start_select",
-                    label_visibility="collapsed",
-                )
-                if start_mode == MY_LOCATION_LABEL:
-                    st.session_state.start_name = MY_LOCATION_LABEL
-                    st.session_state.start_coords = (st.session_state.my_location[0], st.session_state.my_location[1])
-                elif start_mode == start_custom_label:
-                    # Keep existing custom coordinates and name
-                    pass
-                elif start_mode == "🔍 Search Address / Custom Place...":
-                    start_query = st.text_input(
-                        "Search Origin",
-                        value=st.session_state.start_name if st.session_state.start_name not in RANCHI_LANDMARKS and st.session_state.start_name != MY_LOCATION_LABEL else "",
-                        placeholder="Type address or GPS coordinates...",
-                        key="drawer_start_query",
-                        label_visibility="collapsed",
-                    )
-                    if start_query.strip():
-                        sugs = search_locations(start_query.strip(), limit=8)
-                        if sugs:
-                            chosen_s = st.selectbox(
-                                "Matches",
-                                options=sugs,
-                                format_func=lambda s: f"📍 {s.format_display_label()}",
-                                key="drawer_chosen_start_sug",
-                                label_visibility="collapsed",
-                            )
-                            st.session_state.start_name = chosen_s.name
-                            st.session_state.start_coords = (chosen_s.lat, chosen_s.lon)
-                else:
-                    st.session_state.start_name = start_mode
-                    st.session_state.start_coords = RANCHI_LANDMARKS[start_mode]
-
-                st.caption(f"📍 `{st.session_state.start_coords[0]:.4f}, {st.session_state.start_coords[1]:.4f}`")
-
-                # Swap button
-                col_swap, _ = st.columns([1.5, 1])
-                with col_swap:
-                    st.button("⇄ Swap Start & Dest", on_click=swap_locations, use_container_width=True)
-
-                # Build Destination options list, preserving custom/searched location if active
-                dest_custom_label = f"🎯 {st.session_state.dest_name}" if (
-                    st.session_state.dest_name
-                    and st.session_state.dest_name != MY_LOCATION_LABEL
-                    and st.session_state.dest_name not in RANCHI_LANDMARKS
-                ) else None
-
-                dest_options = [MY_LOCATION_LABEL]
-                if dest_custom_label:
-                    dest_options.append(dest_custom_label)
-                dest_options.append("🔍 Search Address / Custom Place...")
-                dest_options.extend(RANCHI_LANDMARKS.keys())
-
-                # To (Destination)
-                st.markdown("**To (Destination):**")
-                if dest_custom_label:
-                    curr_dest_idx = dest_options.index(dest_custom_label)
-                elif st.session_state.dest_name in dest_options:
-                    curr_dest_idx = dest_options.index(st.session_state.dest_name)
-                else:
-                    curr_dest_idx = min(3, len(dest_options) - 1)
-
-                dest_mode = st.selectbox(
-                    "Destination",
-                    dest_options,
-                    index=curr_dest_idx,
-                    key="drawer_dest_select",
-                    label_visibility="collapsed",
-                )
-                if dest_mode == MY_LOCATION_LABEL:
-                    st.session_state.dest_name = MY_LOCATION_LABEL
-                    st.session_state.dest_coords = (st.session_state.my_location[0], st.session_state.my_location[1])
-                elif dest_mode == dest_custom_label:
-                    # Keep existing custom coordinates and name
-                    pass
-                elif dest_mode == "🔍 Search Address / Custom Place...":
-                    dest_query = st.text_input(
-                        "Search Destination",
-                        value=st.session_state.dest_name if st.session_state.dest_name not in RANCHI_LANDMARKS and st.session_state.dest_name != MY_LOCATION_LABEL else "",
-                        placeholder="Type address or GPS coordinates...",
-                        key="drawer_dest_query",
-                        label_visibility="collapsed",
-                    )
-                    if dest_query.strip():
-                        sugs = search_locations(dest_query.strip(), limit=8)
-                        if sugs:
-                            chosen_d = st.selectbox(
-                                "Matches",
-                                options=sugs,
-                                format_func=lambda s: f"🎯 {s.format_display_label()}",
-                                key="drawer_chosen_dest_sug",
-                                label_visibility="collapsed",
-                            )
-                            st.session_state.dest_name = chosen_d.name
-                            st.session_state.dest_coords = (chosen_d.lat, chosen_d.lon)
-                else:
-                    st.session_state.dest_name = dest_mode
-                    st.session_state.dest_coords = RANCHI_LANDMARKS[dest_mode]
-
-                st.caption(f"🎯 `{st.session_state.dest_coords[0]:.4f}, {st.session_state.dest_coords[1]:.4f}`")
-
-            else:
-                # Fictional towns
-                fict_graph = load_fictional_network()
-                fict_nodes = fict_graph.get_nodes()
-                st.session_state.start_name = st.selectbox("From (Town)", fict_nodes, index=0)
-                if st.button("⇄ Swap", on_click=swap_locations, use_container_width=True):
-                    pass
-                st.session_state.dest_name = st.selectbox("To (Town)", fict_nodes, index=min(3, len(fict_nodes)-1))
-
-            st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
-            find_route_clicked = st.button("🚀 Find Route", type="primary", use_container_width=True, key="btn_find_route_action")
-            if find_route_clicked:
-                st.session_state.traffic_notice = None
-                if is_realworld:
-                    try:
-                        with st.spinner("Finding optimal route..."):
-                            compute_routes(is_realworld)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error mapping coordinates: {e}")
-                else:
-                    compute_routes(is_realworld)
-                    st.rerun()
-
-        # Right Column: Map
+            render_directions_drawer(is_realworld)
         with col_map:
             _render_map(primary_result, is_realworld, map_height=560)
-
+        with col_bmarks:
+            render_bookmarks_panel(is_realworld)
+    elif show_left and not show_right:
+        col_menu, col_map = st.columns([1.1, 2.9], gap="medium")
+        with col_menu:
+            render_directions_drawer(is_realworld)
+        with col_map:
+            _render_map(primary_result, is_realworld, map_height=560)
+    elif not show_left and show_right:
+        col_map, col_bmarks = st.columns([2.9, 1.1], gap="medium")
+        with col_map:
+            _render_map(primary_result, is_realworld, map_height=560)
+        with col_bmarks:
+            render_bookmarks_panel(is_realworld)
     else:
-        # Full-width Map View when menu is closed
         _render_map(primary_result, is_realworld, map_height=600)
 
-        # Single "Go" Button at Bottom-Left of the Map
-        col_go, _ = st.columns([1.8, 8.2])
-        with col_go:
+    # ── Bottom Control Bar: Buttons to Open/Close Directions and Bookmarks ──
+    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+    col_bottom_left, col_bottom_space, col_bottom_right = st.columns([2.0, 6.0, 2.0])
+    with col_bottom_left:
+        if not st.session_state.show_route_menu:
             if st.button("🧭 Go (Directions)", type="primary", use_container_width=True, key="btn_go_bottom_left"):
                 st.session_state.show_route_menu = True
+                st.rerun()
+        else:
+            if st.button("✕ Close Directions", use_container_width=True, key="btn_close_directions_bottom"):
+                st.session_state.show_route_menu = False
+                st.rerun()
+
+    with col_bottom_right:
+        if not st.session_state.show_bookmarks:
+            if st.button("🔖 Bookmarks", type="secondary" if not st.session_state.show_route_menu else "primary", use_container_width=True, key="btn_open_bookmarks_bottom"):
+                st.session_state.show_bookmarks = True
+                st.rerun()
+        else:
+            if st.button("✕ Close Bookmarks", use_container_width=True, key="btn_close_bookmarks_bottom"):
+                st.session_state.show_bookmarks = False
                 st.rerun()
 
     # ── Turn-by-Turn Guidance (Collapsible, only when route active) ────────
