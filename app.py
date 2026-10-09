@@ -186,13 +186,23 @@ def init_session_state() -> None:
         # Default My Current Location set to Kairali School, Ranchi
         st.session_state.my_location = (23.3191843, 85.2987681, "Kairali School, Ranchi")
 
-    if "start_name" not in st.session_state:
-        st.session_state.start_name = "Albert Ekka Chowk"
-        st.session_state.start_coords = RANCHI_LANDMARKS["Albert Ekka Chowk"]
+    # Start and destination locations are completely empty by default
+    if "start_name" not in st.session_state or st.session_state.start_name == "Albert Ekka Chowk":
+        st.session_state.start_name = None
+        st.session_state.start_coords = None
 
-    if "dest_name" not in st.session_state:
-        st.session_state.dest_name = "Ranchi Railway Station"
-        st.session_state.dest_coords = RANCHI_LANDMARKS["Ranchi Railway Station"]
+    if "dest_name" not in st.session_state or st.session_state.dest_name == "Ranchi Railway Station":
+        st.session_state.dest_name = None
+        st.session_state.dest_coords = None
+
+    if "origin_alternatives" not in st.session_state:
+        st.session_state.origin_alternatives = []
+    if "dest_alternatives" not in st.session_state:
+        st.session_state.dest_alternatives = []
+    if "origin_status_msg" not in st.session_state:
+        st.session_state.origin_status_msg = None
+    if "dest_status_msg" not in st.session_state:
+        st.session_state.dest_status_msg = None
 
     # NO route by default at startup! Clean map until user requests directions
     if "route_result" not in st.session_state:
@@ -281,6 +291,9 @@ def compute_routes(is_realworld: bool) -> None:
     if not is_realworld:
         graph = load_fictional_network()
         start_node, dest_node = st.session_state.start_name, st.session_state.dest_name
+        if not start_node or not dest_node:
+            st.warning("Please choose both a start town and a destination town.")
+            return
         alts = find_alternative_routes(graph, start_node, dest_node, max_routes=3)
         if alts:
             st.session_state.alternative_results = alts
@@ -295,6 +308,10 @@ def compute_routes(is_realworld: bool) -> None:
         return
 
     # Real-world routing
+    if not st.session_state.start_coords or not st.session_state.dest_coords:
+        st.warning("Please select both an Origin and a Destination.")
+        return
+
     start_lat, start_lon = st.session_state.start_coords
     dest_lat, dest_lon = st.session_state.dest_coords
     start_in_ranchi = is_in_ranchi(start_lat, start_lon)
@@ -581,8 +598,8 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
                 result=primary_result,
                 start_coord=st.session_state.start_coords,
                 dest_coord=st.session_state.dest_coords,
-                start_label=st.session_state.start_name,
-                dest_label=st.session_state.dest_name,
+                start_label=st.session_state.start_name or "Origin",
+                dest_label=st.session_state.dest_name or "Destination",
                 searched_point=st.session_state.searched_location,
                 current_location=st.session_state.my_location,
                 alternative_results=alt_res,
@@ -594,18 +611,34 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
         else:
             folium_map = build_empty_map(center=(23.3191843, 85.2987681), zoom=15)
     else:
-        # Clean start map: Centered on Searched Location or My Location!
+        start_pt = (
+            (st.session_state.start_coords[0], st.session_state.start_coords[1], st.session_state.start_name)
+            if st.session_state.start_coords and st.session_state.start_name
+            else None
+        )
+        dest_pt = (
+            (st.session_state.dest_coords[0], st.session_state.dest_coords[1], st.session_state.dest_name)
+            if st.session_state.dest_coords and st.session_state.dest_name
+            else None
+        )
         clean_center = (
             (st.session_state.searched_location[0], st.session_state.searched_location[1])
             if st.session_state.searched_location
-            else (st.session_state.my_location[0], st.session_state.my_location[1])
+            else (
+                (st.session_state.start_coords[0], st.session_state.start_coords[1])
+                if st.session_state.start_coords
+                else (
+                    (st.session_state.dest_coords[0], st.session_state.dest_coords[1])
+                    if st.session_state.dest_coords
+                    else (st.session_state.my_location[0], st.session_state.my_location[1])
+                )
+            )
         )
-        mode_name = st.session_state.get("network_mode", "")
         folium_map = build_empty_map(
             center=clean_center,
-            zoom=15 if st.session_state.searched_location else 14,
-            start_point=None,
-            dest_point=None,
+            zoom=15 if (st.session_state.searched_location or start_pt or dest_pt) else 14,
+            start_point=start_pt,
+            dest_point=dest_pt,
             searched_point=st.session_state.searched_location,
             current_location=st.session_state.my_location,
             graph=load_cached_osm_network() if (is_realworld and get_traffic_mode()) else None,
@@ -680,6 +713,96 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
                 st.rerun()
 
 
+def on_origin_search_enter() -> None:
+    """Callback when user presses Enter in the Origin input box."""
+    query = st.session_state.get("drawer_origin_search_input", "").strip()
+    if not query:
+        return
+    results = search_locations(query, limit=5)
+    if results:
+        top = results[0]
+        st.session_state.start_name = top.name
+        st.session_state.start_coords = (top.lat, top.lon)
+        st.session_state.searched_location = (top.lat, top.lon, top.name)
+        st.session_state.route_result = None
+        st.session_state.origin_status_msg = f"✓ Set: {top.format_display_label()}"
+        st.session_state.origin_alternatives = results[1:] if len(results) > 1 else []
+        st.session_state.drawer_origin_search_input = ""
+    else:
+        st.session_state.origin_status_msg = f"❌ No location found for '{query}'"
+        st.session_state.origin_alternatives = []
+
+
+def on_dest_search_enter() -> None:
+    """Callback when user presses Enter in the Destination input box."""
+    query = st.session_state.get("drawer_dest_search_input", "").strip()
+    if not query:
+        return
+    results = search_locations(query, limit=5)
+    if results:
+        top = results[0]
+        st.session_state.dest_name = top.name
+        st.session_state.dest_coords = (top.lat, top.lon)
+        st.session_state.searched_location = (top.lat, top.lon, top.name)
+        st.session_state.route_result = None
+        st.session_state.dest_status_msg = f"✓ Set: {top.format_display_label()}"
+        st.session_state.dest_alternatives = results[1:] if len(results) > 1 else []
+        st.session_state.drawer_dest_search_input = ""
+    else:
+        st.session_state.dest_status_msg = f"❌ No location found for '{query}'"
+        st.session_state.dest_alternatives = []
+
+
+def on_preset_origin_selected() -> None:
+    """Callback when user picks a preset origin landmark. Never loops or crashes."""
+    chosen = st.session_state.get("select_preset_origin_quick")
+    if not chosen or chosen == "-- Preset Landmarks --":
+        return
+    bookmarks = st.session_state.get("bookmarks", [])
+    available = {**WORLDWIDE_LANDMARKS, **RANCHI_LANDMARKS}
+    if chosen.startswith("⭐ "):
+        bname = chosen[2:]
+        bmatch = next((b for b in bookmarks if b["name"] == bname), None)
+        if bmatch:
+            st.session_state.start_name = bmatch["name"]
+            st.session_state.start_coords = (bmatch["lat"], bmatch["lon"])
+            st.session_state.searched_location = (bmatch["lat"], bmatch["lon"], bmatch["name"])
+    elif chosen in available:
+        st.session_state.start_name = chosen
+        st.session_state.start_coords = available[chosen]
+        st.session_state.searched_location = (available[chosen][0], available[chosen][1], chosen)
+    st.session_state.route_result = None
+    st.session_state.origin_alternatives = []
+    st.session_state.origin_status_msg = f"✓ Set: {st.session_state.start_name}"
+    # Reset widget state so it never re-triggers or loops
+    st.session_state.select_preset_origin_quick = "-- Preset Landmarks --"
+
+
+def on_preset_dest_selected() -> None:
+    """Callback when user picks a preset destination landmark. Never loops or crashes."""
+    chosen = st.session_state.get("select_preset_dest_quick")
+    if not chosen or chosen == "-- Preset Landmarks --":
+        return
+    bookmarks = st.session_state.get("bookmarks", [])
+    available = {**WORLDWIDE_LANDMARKS, **RANCHI_LANDMARKS}
+    if chosen.startswith("⭐ "):
+        bname = chosen[2:]
+        bmatch = next((b for b in bookmarks if b["name"] == bname), None)
+        if bmatch:
+            st.session_state.dest_name = bmatch["name"]
+            st.session_state.dest_coords = (bmatch["lat"], bmatch["lon"])
+            st.session_state.searched_location = (bmatch["lat"], bmatch["lon"], bmatch["name"])
+    elif chosen in available:
+        st.session_state.dest_name = chosen
+        st.session_state.dest_coords = available[chosen]
+        st.session_state.searched_location = (available[chosen][0], available[chosen][1], chosen)
+    st.session_state.route_result = None
+    st.session_state.dest_alternatives = []
+    st.session_state.dest_status_msg = f"✓ Set: {st.session_state.dest_name}"
+    # Reset widget state so it never re-triggers or loops
+    st.session_state.select_preset_dest_quick = "-- Preset Landmarks --"
+
+
 def render_directions_drawer(is_realworld: bool) -> None:
     """Render the sliding directions drawer on the left side."""
     head_col1, head_col2 = st.columns([4, 1])
@@ -696,40 +819,59 @@ def render_directions_drawer(is_realworld: bool) -> None:
 
         # ── 1. Origin (From) ──
         st.markdown("**🚩 From (Origin):**")
-        start_lat, start_lon = st.session_state.start_coords
-        st.markdown(
-            f"""
-            <div style="background:#F0FDF4; border:1px solid #BBF7D0; border-radius:8px; padding:8px 12px; margin-bottom:8px;">
-                <b style="color:#166534; font-size:14px;">🚩 {st.session_state.start_name}</b><br>
-                <span style="color:#15803D; font-size:11px;">GPS: {start_lat:.5f}, {start_lon:.5f}</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        if st.session_state.start_coords and st.session_state.start_name:
+            start_lat, start_lon = st.session_state.start_coords
+            col_orig_card, col_orig_clear = st.columns([4.2, 0.8])
+            with col_orig_card:
+                st.markdown(
+                    f"""
+                    <div style="background:#F0FDF4; border:1px solid #BBF7D0; border-radius:8px; padding:8px 12px; margin-bottom:8px;">
+                        <b style="color:#166534; font-size:14px;">🚩 {st.session_state.start_name}</b><br>
+                        <span style="color:#15803D; font-size:11px;">GPS: {start_lat:.5f}, {start_lon:.5f}</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            with col_orig_clear:
+                if st.button("✕", key="btn_clear_origin", help="Clear origin"):
+                    st.session_state.start_name = None
+                    st.session_state.start_coords = None
+                    st.session_state.route_result = None
+                    st.session_state.origin_status_msg = None
+                    st.session_state.origin_alternatives = []
+                    st.rerun()
+        else:
+            st.markdown(
+                """
+                <div style="background:#F8FAFC; border:1px dashed #CBD5E1; border-radius:8px; padding:8px 12px; margin-bottom:8px; color:#64748B; font-size:13px;">
+                    🚩 <i>No origin selected. Type below & press Enter.</i>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-        origin_search_q = st.text_input(
+        st.text_input(
             "Search Origin:",
-            placeholder="Search address, landmark, or city anywhere...",
+            placeholder="Type any place & press Enter (e.g. Purulia, Eiffel Tower)...",
             key="drawer_origin_search_input",
+            on_change=on_origin_search_enter,
             label_visibility="collapsed",
         )
-        if origin_search_q.strip():
-            o_sugs = search_locations(origin_search_q.strip(), limit=6)
-            if o_sugs:
-                chosen_o = st.selectbox(
-                    "Matches for Origin:",
-                    options=o_sugs,
-                    format_func=lambda s: f"📍 {s.format_display_label()}",
-                    key="select_drawer_origin_match",
-                    label_visibility="collapsed",
-                )
-                if st.button("✅ Set as Origin", key="btn_apply_origin_match", use_container_width=True):
-                    st.session_state.start_name = chosen_o.name
-                    st.session_state.start_coords = (chosen_o.lat, chosen_o.lon)
-                    st.session_state.route_result = None
-                    st.rerun()
-            else:
-                st.caption(f"No results for '{origin_search_q}'. Try another search or GPS coordinates.")
+
+        if st.session_state.get("origin_status_msg"):
+            st.caption(st.session_state.origin_status_msg)
+
+        if st.session_state.get("origin_alternatives"):
+            with st.expander("ℹ️ Other matches for Origin", expanded=False):
+                for i, alt in enumerate(st.session_state.origin_alternatives):
+                    if st.button(f"📍 {alt.format_display_label()}", key=f"btn_alt_orig_{i}", use_container_width=True):
+                        st.session_state.start_name = alt.name
+                        st.session_state.start_coords = (alt.lat, alt.lon)
+                        st.session_state.searched_location = (alt.lat, alt.lon, alt.name)
+                        st.session_state.origin_status_msg = f"✓ Set: {alt.format_display_label()}"
+                        st.session_state.origin_alternatives = []
+                        st.session_state.route_result = None
+                        st.rerun()
 
         col_orig_my, col_orig_pre = st.columns([1.1, 1.9])
         with col_orig_my:
@@ -737,30 +879,21 @@ def render_directions_drawer(is_realworld: bool) -> None:
                 st.session_state.start_name = MY_LOCATION_LABEL
                 st.session_state.start_coords = (st.session_state.my_location[0], st.session_state.my_location[1])
                 st.session_state.route_result = None
+                st.session_state.origin_status_msg = "✓ Set: My Current Location"
+                st.session_state.origin_alternatives = []
                 st.rerun()
         with col_orig_pre:
             orig_pre_opts = ["-- Preset Landmarks --"]
             for bm in bookmarks:
                 orig_pre_opts.append(f"⭐ {bm['name']}")
             orig_pre_opts.extend(sorted(list(available_landmarks.keys())))
-            chosen_orig_pre = st.selectbox(
+            st.selectbox(
                 "Preset Origin",
                 orig_pre_opts,
                 key="select_preset_origin_quick",
+                on_change=on_preset_origin_selected,
                 label_visibility="collapsed",
             )
-            if chosen_orig_pre and chosen_orig_pre != "-- Preset Landmarks --":
-                if chosen_orig_pre.startswith("⭐ "):
-                    bname = chosen_orig_pre[2:]
-                    bmatch = next((b for b in bookmarks if b["name"] == bname), None)
-                    if bmatch:
-                        st.session_state.start_name = bmatch["name"]
-                        st.session_state.start_coords = (bmatch["lat"], bmatch["lon"])
-                elif chosen_orig_pre in available_landmarks:
-                    st.session_state.start_name = chosen_orig_pre
-                    st.session_state.start_coords = available_landmarks[chosen_orig_pre]
-                st.session_state.route_result = None
-                st.rerun()
 
         st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
         # Swap button
@@ -772,40 +905,59 @@ def render_directions_drawer(is_realworld: bool) -> None:
 
         # ── 2. Destination (To) ──
         st.markdown("**🏁 To (Destination):**")
-        dest_lat, dest_lon = st.session_state.dest_coords
-        st.markdown(
-            f"""
-            <div style="background:#FEF2F2; border:1px solid #FECACA; border-radius:8px; padding:8px 12px; margin-bottom:8px;">
-                <b style="color:#991B1B; font-size:14px;">🏁 {st.session_state.dest_name}</b><br>
-                <span style="color:#DC2626; font-size:11px;">GPS: {dest_lat:.5f}, {dest_lon:.5f}</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        if st.session_state.dest_coords and st.session_state.dest_name:
+            dest_lat, dest_lon = st.session_state.dest_coords
+            col_dest_card, col_dest_clear = st.columns([4.2, 0.8])
+            with col_dest_card:
+                st.markdown(
+                    f"""
+                    <div style="background:#FEF2F2; border:1px solid #FECACA; border-radius:8px; padding:8px 12px; margin-bottom:8px;">
+                        <b style="color:#991B1B; font-size:14px;">🏁 {st.session_state.dest_name}</b><br>
+                        <span style="color:#DC2626; font-size:11px;">GPS: {dest_lat:.5f}, {dest_lon:.5f}</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            with col_dest_clear:
+                if st.button("✕", key="btn_clear_dest", help="Clear destination"):
+                    st.session_state.dest_name = None
+                    st.session_state.dest_coords = None
+                    st.session_state.route_result = None
+                    st.session_state.dest_status_msg = None
+                    st.session_state.dest_alternatives = []
+                    st.rerun()
+        else:
+            st.markdown(
+                """
+                <div style="background:#F8FAFC; border:1px dashed #CBD5E1; border-radius:8px; padding:8px 12px; margin-bottom:8px; color:#64748B; font-size:13px;">
+                    🏁 <i>No destination set. Type below & press Enter.</i>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-        dest_search_q = st.text_input(
+        st.text_input(
             "Search Destination:",
-            placeholder="Search address, landmark, or city anywhere...",
+            placeholder="Type any place & press Enter (e.g. Adra, Louvre Museum)...",
             key="drawer_dest_search_input",
+            on_change=on_dest_search_enter,
             label_visibility="collapsed",
         )
-        if dest_search_q.strip():
-            d_sugs = search_locations(dest_search_q.strip(), limit=6)
-            if d_sugs:
-                chosen_d = st.selectbox(
-                    "Matches for Destination:",
-                    options=d_sugs,
-                    format_func=lambda s: f"🎯 {s.format_display_label()}",
-                    key="select_drawer_dest_match",
-                    label_visibility="collapsed",
-                )
-                if st.button("✅ Set as Destination", key="btn_apply_dest_match", use_container_width=True):
-                    st.session_state.dest_name = chosen_d.name
-                    st.session_state.dest_coords = (chosen_d.lat, chosen_d.lon)
-                    st.session_state.route_result = None
-                    st.rerun()
-            else:
-                st.caption(f"No results for '{dest_search_q}'. Try another search or GPS coordinates.")
+
+        if st.session_state.get("dest_status_msg"):
+            st.caption(st.session_state.dest_status_msg)
+
+        if st.session_state.get("dest_alternatives"):
+            with st.expander("ℹ️ Other matches for Destination", expanded=False):
+                for i, alt in enumerate(st.session_state.dest_alternatives):
+                    if st.button(f"📍 {alt.format_display_label()}", key=f"btn_alt_dest_{i}", use_container_width=True):
+                        st.session_state.dest_name = alt.name
+                        st.session_state.dest_coords = (alt.lat, alt.lon)
+                        st.session_state.searched_location = (alt.lat, alt.lon, alt.name)
+                        st.session_state.dest_status_msg = f"✓ Set: {alt.format_display_label()}"
+                        st.session_state.dest_alternatives = []
+                        st.session_state.route_result = None
+                        st.rerun()
 
         col_dest_my, col_dest_pre = st.columns([1.1, 1.9])
         with col_dest_my:
@@ -813,30 +965,21 @@ def render_directions_drawer(is_realworld: bool) -> None:
                 st.session_state.dest_name = MY_LOCATION_LABEL
                 st.session_state.dest_coords = (st.session_state.my_location[0], st.session_state.my_location[1])
                 st.session_state.route_result = None
+                st.session_state.dest_status_msg = "✓ Set: My Current Location"
+                st.session_state.dest_alternatives = []
                 st.rerun()
         with col_dest_pre:
             dest_pre_opts = ["-- Preset Landmarks --"]
             for bm in bookmarks:
                 dest_pre_opts.append(f"⭐ {bm['name']}")
             dest_pre_opts.extend(sorted(list(available_landmarks.keys())))
-            chosen_dest_pre = st.selectbox(
+            st.selectbox(
                 "Preset Destination",
                 dest_pre_opts,
                 key="select_preset_dest_quick",
+                on_change=on_preset_dest_selected,
                 label_visibility="collapsed",
             )
-            if chosen_dest_pre and chosen_dest_pre != "-- Preset Landmarks --":
-                if chosen_dest_pre.startswith("⭐ "):
-                    bname = chosen_dest_pre[2:]
-                    bmatch = next((b for b in bookmarks if b["name"] == bname), None)
-                    if bmatch:
-                        st.session_state.dest_name = bmatch["name"]
-                        st.session_state.dest_coords = (bmatch["lat"], bmatch["lon"])
-                elif chosen_dest_pre in available_landmarks:
-                    st.session_state.dest_name = chosen_dest_pre
-                    st.session_state.dest_coords = available_landmarks[chosen_dest_pre]
-                st.session_state.route_result = None
-                st.rerun()
 
     else:
         # Fictional towns
@@ -852,15 +995,23 @@ def render_directions_drawer(is_realworld: bool) -> None:
     if find_route_clicked:
         st.session_state.traffic_notice = None
         if is_realworld:
-            try:
-                with st.spinner("Finding optimal route..."):
-                    compute_routes(is_realworld)
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error mapping coordinates: {e}")
+            if not st.session_state.start_coords or not st.session_state.start_name:
+                st.warning("⚠️ Please select an Origin (From) first.")
+            elif not st.session_state.dest_coords or not st.session_state.dest_name:
+                st.warning("⚠️ Please select a Destination (To) first.")
+            else:
+                try:
+                    with st.spinner("Finding optimal route..."):
+                        compute_routes(is_realworld)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error mapping coordinates: {e}")
         else:
-            compute_routes(is_realworld)
-            st.rerun()
+            if not st.session_state.start_name or not st.session_state.dest_name:
+                st.warning("⚠️ Please select both a start and destination town.")
+            else:
+                compute_routes(is_realworld)
+                st.rerun()
 
 
 def render_bookmarks_panel(is_realworld: bool) -> None:
