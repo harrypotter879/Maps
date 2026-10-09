@@ -223,6 +223,13 @@ def init_session_state() -> None:
     if "last_clicked_coords" not in st.session_state:
         st.session_state.last_clicked_coords = None
 
+    valid_modes = [
+        "Real-World Map (Worldwide Search, Routing & Ranchi Traffic)",
+        "Fictional Regional Map (Stage 1)",
+    ]
+    if "network_mode" not in st.session_state or st.session_state.network_mode not in valid_modes:
+        st.session_state.network_mode = valid_modes[0]
+
     # Shortest-distance is the default; departure time is a model input.
     if "traffic_choice" not in st.session_state:
         st.session_state.traffic_choice = SHORTEST_DISTANCE
@@ -293,11 +300,8 @@ def compute_routes(is_realworld: bool) -> None:
     start_in_ranchi = is_in_ranchi(start_lat, start_lon)
     dest_in_ranchi = is_in_ranchi(dest_lat, dest_lon)
 
-    mode_name = st.session_state.get("network_mode", "")
-    is_ranchi_selected = "Ranchi Road Network" in mode_name
-
-    # Use Ranchi local graph & traffic simulation ONLY if explicitly in Ranchi mode AND both points are in Ranchi
-    if is_ranchi_selected and start_in_ranchi and dest_in_ranchi:
+    # Use Ranchi local graph & traffic simulation whenever both points are in Ranchi
+    if start_in_ranchi and dest_in_ranchi:
         mode = get_traffic_mode()
         departure = normalize_departure_time(st.session_state.get("departure_time"))
         graph = load_cached_osm_network()
@@ -421,21 +425,6 @@ def _apply_manual_departure_time() -> None:
 def render_traffic_controls(is_realworld: bool) -> None:
     """Routing mode and modeled departure-time controls."""
     if not is_realworld:
-        return
-    mode_name = st.session_state.get("network_mode", "")
-    if "Ranchi Road Network" not in mode_name:
-        st.markdown(
-            """
-            <div style="background:#F0FDF4; border:1px solid #BBF7D0; border-radius:8px; padding:10px 14px; margin-bottom:14px; display:flex; align-items:center; gap:10px;">
-                <span style="font-size:20px;">🌍</span>
-                <div>
-                    <b style="color:#166534; font-size:14px;">Worldwide Navigation Engine Active</b>
-                    <div style="color:#15803D; font-size:12px;">Real-time OpenStreetMap road network, turn-by-turn itinerary, and driving ETA across all cities & countries.</div>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
         return
     with st.container(border=True):
         st.markdown("#### 🚦 Traffic-Aware Routing")
@@ -619,8 +608,8 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
             dest_point=None,
             searched_point=st.session_state.searched_location,
             current_location=st.session_state.my_location,
-            graph=load_cached_osm_network() if (is_realworld and "Ranchi" in mode_name and get_traffic_mode()) else None,
-            traffic_mode=get_traffic_mode() if (is_realworld and "Ranchi" in mode_name) else None,
+            graph=load_cached_osm_network() if (is_realworld and get_traffic_mode()) else None,
+            traffic_mode=get_traffic_mode() if is_realworld else None,
             departure_time=st.session_state.departure_time,
         )
 
@@ -703,9 +692,7 @@ def render_directions_drawer(is_realworld: bool) -> None:
 
     if is_realworld:
         bookmarks = st.session_state.get("bookmarks", [])
-        mode_str = st.session_state.get("network_mode", "Worldwide")
-        is_worldwide = "Worldwide" in mode_str
-        available_landmarks = {**WORLDWIDE_LANDMARKS, **RANCHI_LANDMARKS} if is_worldwide else RANCHI_LANDMARKS
+        available_landmarks = {**WORLDWIDE_LANDMARKS, **RANCHI_LANDMARKS}
 
         # ── 1. Origin (From) ──
         st.markdown("**🚩 From (Origin):**")
@@ -961,8 +948,7 @@ def render_bookmarks_panel(is_realworld: bool) -> None:
             key="input_new_bookmark_name",
         )
 
-        is_worldwide = "Worldwide" in st.session_state.get("network_mode", "Worldwide")
-        all_landmarks = {**WORLDWIDE_LANDMARKS, **RANCHI_LANDMARKS} if is_worldwide else RANCHI_LANDMARKS
+        all_landmarks = {**WORLDWIDE_LANDMARKS, **RANCHI_LANDMARKS}
         source_choices = ["📍 Preset Landmark", "🔍 Search Address", "🔵 Current Location"]
         if st.session_state.get("last_clicked_coords"):
             source_choices.append("🖱️ Last Clicked Map Point")
@@ -1149,13 +1135,12 @@ def main() -> None:
         network_mode = st.radio(
             "Road Network",
             [
-                "🌍 Worldwide Real-World Map (Global Search & Routing)",
-                "📍 Ranchi Road Network (Local Graph & Traffic Simulation)",
-                "🗺️ Fictional Regional Map (Stage 1)",
+                "Real-World Map (Worldwide Search, Routing & Ranchi Traffic)",
+                "Fictional Regional Map (Stage 1)",
             ],
             index=0,
             key="network_mode",
-            help="Worldwide Mode routes anywhere on Earth using OSM OSRM. Ranchi Mode uses the local offline graph with traffic simulation.",
+            help="Real-World Map supports both Ranchi local traffic simulation and worldwide routing. Stage 1 is the fictional regional map.",
         )
         is_realworld = "Real-World" in network_mode
 
