@@ -4,5 +4,11 @@
     "address": "Birsa Munda Airport",
     "lat": 23.3146,
     "lon": 85.3255
+  },
+  {
+    "name": "jsl",
+    "address": "Chutia",
+    "lat": 23.34932,
+    "lon": 85.33557
   }
 ]
