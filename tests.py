@@ -1597,5 +1597,84 @@ class BookmarkTests(unittest.TestCase):
             self.assertAlmostEqual(loaded[0]["lat"], 23.33)
 
 
+class TestWorldwideNavigation(unittest.TestCase):
+    """Automated tests for worldwide search, geocoding, and routing features."""
+
+    def test_is_in_ranchi_boundaries(self) -> None:
+        """Verify boundary checks correctly classify Ranchi vs worldwide locations."""
+        from worldwide_router import is_in_ranchi
+
+        # Inside Ranchi
+        self.assertTrue(is_in_ranchi(23.3699, 85.3253))  # Albert Ekka Chowk
+        self.assertTrue(is_in_ranchi(23.3512, 85.3347))  # Railway Station
+
+        # Outside Ranchi (Worldwide)
+        self.assertFalse(is_in_ranchi(48.8584, 2.2945))   # Paris (Eiffel Tower)
+        self.assertFalse(is_in_ranchi(40.7580, -73.9855)) # New York (Times Square)
+        self.assertFalse(is_in_ranchi(28.6129, 77.2295))  # New Delhi (India Gate)
+        self.assertFalse(is_in_ranchi(35.6586, 139.7454)) # Tokyo (Tokyo Tower)
+
+    def test_worldwide_landmarks_exist(self) -> None:
+        """Verify standard worldwide landmarks dictionary is populated with key sites."""
+        from worldwide_router import WORLDWIDE_LANDMARKS
+
+        self.assertGreaterEqual(len(WORLDWIDE_LANDMARKS), 15)
+        self.assertIn("Eiffel Tower, Paris", WORLDWIDE_LANDMARKS)
+        self.assertIn("Times Square, New York", WORLDWIDE_LANDMARKS)
+        self.assertIn("Tokyo Tower, Tokyo", WORLDWIDE_LANDMARKS)
+        self.assertIn("India Gate, New Delhi", WORLDWIDE_LANDMARKS)
+
+    def test_search_local_landmarks_matches_worldwide(self) -> None:
+        """Verify search_local_landmarks finds worldwide landmark entries."""
+        from geocoder import search_local_landmarks
+
+        eiffel = search_local_landmarks("Eiffel")
+        self.assertTrue(any("Eiffel" in item.name for item in eiffel))
+
+        tokyo = search_local_landmarks("Tokyo Tower")
+        self.assertTrue(any("Tokyo Tower" in item.name for item in tokyo))
+
+    def test_worldwide_route_fetch(self) -> None:
+        """Verify fetch_worldwide_route returns valid Graph and PathResult."""
+        from worldwide_router import fetch_worldwide_route
+
+        # Short route in Paris between Eiffel Tower and nearby Avenue
+        p1 = (48.8584, 2.2945)
+        p2 = (48.8606, 2.3376)
+        graph, results = fetch_worldwide_route(p1, p2, "Eiffel Tower", "Louvre")
+
+        self.assertIsNotNone(graph)
+        self.assertGreater(graph.node_count, 0)
+        self.assertGreater(len(results), 0)
+        top = results[0]
+        self.assertTrue(top.found)
+        self.assertGreater(top.total_distance, 1000)  # > 1 km
+        self.assertGreater(len(top.legs), 0)
+        self.assertIn("Worldwide", top.algorithm)
+
+    def test_map_view_renders_worldwide_route(self) -> None:
+        """Verify build_folium_map generates HTML without error for worldwide routes."""
+        from worldwide_router import fetch_worldwide_route
+        from map_view import build_folium_map
+
+        p1 = (48.8584, 2.2945)
+        p2 = (48.8606, 2.3376)
+        graph, results = fetch_worldwide_route(p1, p2, "Eiffel Tower", "Louvre")
+        self.assertTrue(results[0].found)
+
+        m = build_folium_map(
+            graph=graph,
+            result=results[0],
+            start_coord=p1,
+            dest_coord=p2,
+            start_label="Eiffel Tower",
+            dest_label="Louvre",
+            show_hud=False,
+        )
+        html = m._repr_html_()
+        self.assertIn("folium", html.lower())
+        self.assertGreater(len(html), 1000)
+
+
 if __name__ == "__main__":
     unittest.main()

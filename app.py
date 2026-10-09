@@ -35,6 +35,7 @@ from osm_loader import get_ranchi_road_network, RANCHI_LANDMARKS
 from geocoder import search_locations, reverse_geocode, GeocodedLocation
 from map_view import build_folium_map, build_empty_map
 from display import format_distance
+from worldwide_router import fetch_worldwide_route, WORLDWIDE_LANDMARKS, is_in_ranchi
 from traffic import (
     TRAFFIC_ICONS, TRAFFIC_MODE_LABELS, HIGH, MEDIUM, LOW,
     SHORTEST_DISTANCE, TRAFFIC_AWARE, PERIOD_LABELS,
@@ -204,6 +205,11 @@ def init_session_state() -> None:
     if "searched_location" not in st.session_state:
         st.session_state.searched_location = None  # (lat, lon, name)
 
+    if "worldwide_graph" not in st.session_state:
+        st.session_state.worldwide_graph = None
+    if "is_worldwide_active" not in st.session_state:
+        st.session_state.is_worldwide_active = False
+
     # Route menu drawer is closed by default at startup!
     if "show_route_menu" not in st.session_state:
         st.session_state.show_route_menu = False
@@ -259,44 +265,87 @@ def get_traffic_mode() -> Optional[str]:
 
 def compute_routes(is_realworld: bool) -> None:
     """
-    Run the existing route search (A* + alternatives) and store results in session state.
-    Uses physical distance or modeled travel time according to the selected mode.
-    Raises on invalid locations (callers decide how to show the error).
+    Run route search and store results in session state.
+    Supports:
+    1. Global Worldwide road navigation (OSRM) across any city/country.
+    2. Ranchi Local road network (A* / Dijkstra + Traffic estimation).
+    3. Fictional regional network (Stage 1).
     """
-    mode = get_traffic_mode() if is_realworld else None
-    departure = normalize_departure_time(st.session_state.get("departure_time"))
-    if is_realworld:
-        graph = load_cached_osm_network()
-        start_lat, start_lon = st.session_state.start_coords
-        dest_lat, dest_lon = st.session_state.dest_coords
-        start_node, _ = graph.find_nearest_node(start_lat, start_lon)
-        dest_node, _ = graph.find_nearest_node(dest_lat, dest_lon)
-    else:
+    if not is_realworld:
         graph = load_fictional_network()
         start_node, dest_node = st.session_state.start_name, st.session_state.dest_name
+        alts = find_alternative_routes(graph, start_node, dest_node, max_routes=3)
+        if alts:
+            st.session_state.alternative_results = alts
+            st.session_state.route_result = alts[0]
+            st.session_state.active_route_index = 0
+        else:
+            st.session_state.alternative_results = []
+            st.session_state.route_result = find_shortest_path_astar(graph, start_node, dest_node)
+        st.session_state.baseline_result = None
+        st.session_state.is_worldwide_active = False
+        st.session_state.worldwide_graph = None
+        return
 
-    cost_fn = apply_traffic_mode(mode, departure, graph=graph)
+    # Real-world routing
+    start_lat, start_lon = st.session_state.start_coords
+    dest_lat, dest_lon = st.session_state.dest_coords
+    start_in_ranchi = is_in_ranchi(start_lat, start_lon)
+    dest_in_ranchi = is_in_ranchi(dest_lat, dest_lon)
 
-    alts = find_alternative_routes(graph, start_node, dest_node, max_routes=3, cost_function=cost_fn)
-    if alts:
-        st.session_state.alternative_results = alts
-        st.session_state.route_result = alts[0]
-        st.session_state.active_route_index = 0
-    else:
-        st.session_state.alternative_results = []
-        st.session_state.route_result = find_shortest_path_astar(
-            graph, start_node, dest_node, cost_function=cost_fn
+    mode_name = st.session_state.get("network_mode", "")
+    is_ranchi_selected = "Ranchi Road Network" in mode_name
+
+    # Use Ranchi local graph & traffic simulation ONLY if explicitly in Ranchi mode AND both points are in Ranchi
+    if is_ranchi_selected and start_in_ranchi and dest_in_ranchi:
+        mode = get_traffic_mode()
+        departure = normalize_departure_time(st.session_state.get("departure_time"))
+        graph = load_cached_osm_network()
+        start_node, _ = graph.find_nearest_node(start_lat, start_lon)
+        dest_node, _ = graph.find_nearest_node(dest_lat, dest_lon)
+        cost_fn = apply_traffic_mode(mode, departure, graph=graph)
+
+        alts = find_alternative_routes(graph, start_node, dest_node, max_routes=3, cost_function=cost_fn)
+        if alts:
+            st.session_state.alternative_results = alts
+            st.session_state.route_result = alts[0]
+            st.session_state.active_route_index = 0
+        else:
+            st.session_state.alternative_results = []
+            st.session_state.route_result = find_shortest_path_astar(
+                graph, start_node, dest_node, cost_function=cost_fn
+            )
+        st.session_state.baseline_result = (
+            find_shortest_path_astar(graph, start_node, dest_node) if mode else None
         )
+        st.session_state.is_worldwide_active = False
+        st.session_state.worldwide_graph = None
+    else:
+        # Route via Worldwide Navigation Engine (OSRM)
+        w_graph, w_results = fetch_worldwide_route(
+            (start_lat, start_lon),
+            (dest_lat, dest_lon),
+            start_label=st.session_state.start_name,
+            dest_label=st.session_state.dest_name,
+        )
+        st.session_state.worldwide_graph = w_graph
+        st.session_state.is_worldwide_active = True
+        st.session_state.baseline_result = None
 
-    # The physical shortest path is retained for an honest comparison.
-    st.session_state.baseline_result = (
-        find_shortest_path_astar(graph, start_node, dest_node) if mode else None
-    )
+        if w_results and w_results[0].found:
+            st.session_state.alternative_results = w_results
+            st.session_state.route_result = w_results[0]
+            st.session_state.active_route_index = 0
+        else:
+            st.session_state.alternative_results = []
+            st.session_state.route_result = w_results[0] if w_results else None
 
 
 def on_routing_settings_change() -> None:
     """Recalculate an active route after its mode or departure time changes."""
     is_realworld = "Real-World" in st.session_state.get("network_mode", "Real-World")
+    if st.session_state.get("is_worldwide_active"):
+        return
     mode = get_traffic_mode()
     previous = st.session_state.route_result
     st.session_state.traffic_notice = None
@@ -372,6 +421,21 @@ def _apply_manual_departure_time() -> None:
 def render_traffic_controls(is_realworld: bool) -> None:
     """Routing mode and modeled departure-time controls."""
     if not is_realworld:
+        return
+    mode_name = st.session_state.get("network_mode", "")
+    if "Ranchi Road Network" not in mode_name:
+        st.markdown(
+            """
+            <div style="background:#F0FDF4; border:1px solid #BBF7D0; border-radius:8px; padding:10px 14px; margin-bottom:14px; display:flex; align-items:center; gap:10px;">
+                <span style="font-size:20px;">🌍</span>
+                <div>
+                    <b style="color:#166534; font-size:14px;">Worldwide Navigation Engine Active</b>
+                    <div style="color:#15803D; font-size:12px;">Real-time OpenStreetMap road network, turn-by-turn itinerary, and driving ETA across all cities & countries.</div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         return
     with st.container(border=True):
         st.markdown("#### 🚦 Traffic-Aware Routing")
@@ -509,7 +573,16 @@ def clear_global_search_pin() -> None:
 def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_height: int = 580) -> None:
     """Helper to render interactive Folium map with current points, blue dot marker, or clean state."""
     if primary_result and primary_result.found:
-        graph = load_cached_osm_network() if is_realworld else load_fictional_network()
+        if st.session_state.get("is_worldwide_active") and st.session_state.get("worldwide_graph"):
+            graph = st.session_state.worldwide_graph
+            traffic_mode = None
+        elif is_realworld:
+            graph = load_cached_osm_network()
+            traffic_mode = get_traffic_mode()
+        else:
+            graph = load_fictional_network()
+            traffic_mode = None
+
         alt_res = st.session_state.get("alternative_results")
         active_idx = st.session_state.get("active_route_index", 0)
 
@@ -526,22 +599,28 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
                 alternative_results=alt_res,
                 active_route_index=active_idx,
                 show_hud=False,  # Keep map canvas clean!
-                traffic_mode=get_traffic_mode(),
+                traffic_mode=traffic_mode,
                 departure_time=st.session_state.departure_time,
             )
         else:
             folium_map = build_empty_map(center=(23.3191843, 85.2987681), zoom=15)
     else:
-        # Clean start map: Centered on My Location (Kairali School, Ranchi)!
+        # Clean start map: Centered on Searched Location or My Location!
+        clean_center = (
+            (st.session_state.searched_location[0], st.session_state.searched_location[1])
+            if st.session_state.searched_location
+            else (st.session_state.my_location[0], st.session_state.my_location[1])
+        )
+        mode_name = st.session_state.get("network_mode", "")
         folium_map = build_empty_map(
-            center=(st.session_state.my_location[0], st.session_state.my_location[1]),
-            zoom=15,
+            center=clean_center,
+            zoom=15 if st.session_state.searched_location else 14,
             start_point=None,
             dest_point=None,
             searched_point=st.session_state.searched_location,
             current_location=st.session_state.my_location,
-            graph=load_cached_osm_network() if (is_realworld and get_traffic_mode()) else None,
-            traffic_mode=get_traffic_mode() if is_realworld else None,
+            graph=load_cached_osm_network() if (is_realworld and "Ranchi" in mode_name and get_traffic_mode()) else None,
+            traffic_mode=get_traffic_mode() if (is_realworld and "Ranchi" in mode_name) else None,
             departure_time=st.session_state.departure_time,
         )
 
@@ -624,153 +703,153 @@ def render_directions_drawer(is_realworld: bool) -> None:
 
     if is_realworld:
         bookmarks = st.session_state.get("bookmarks", [])
-        start_custom_label = f"📍 {st.session_state.start_name}" if (
-            st.session_state.start_name
-            and st.session_state.start_name != MY_LOCATION_LABEL
-            and st.session_state.start_name not in RANCHI_LANDMARKS
-            and not any(bm["name"] == st.session_state.start_name for bm in bookmarks)
-        ) else None
+        mode_str = st.session_state.get("network_mode", "Worldwide")
+        is_worldwide = "Worldwide" in mode_str
+        available_landmarks = {**WORLDWIDE_LANDMARKS, **RANCHI_LANDMARKS} if is_worldwide else RANCHI_LANDMARKS
 
-        start_options = [MY_LOCATION_LABEL]
-        for bm in bookmarks:
-            start_options.append(f"🔖 {bm['name']}")
-        if start_custom_label:
-            start_options.append(start_custom_label)
-        start_options.append("🔍 Search Address / Custom Place...")
-        start_options.extend(RANCHI_LANDMARKS.keys())
+        # ── 1. Origin (From) ──
+        st.markdown("**🚩 From (Origin):**")
+        start_lat, start_lon = st.session_state.start_coords
+        st.markdown(
+            f"""
+            <div style="background:#F0FDF4; border:1px solid #BBF7D0; border-radius:8px; padding:8px 12px; margin-bottom:8px;">
+                <b style="color:#166534; font-size:14px;">🚩 {st.session_state.start_name}</b><br>
+                <span style="color:#15803D; font-size:11px;">GPS: {start_lat:.5f}, {start_lon:.5f}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-        # From (Origin)
-        st.markdown("**From (Origin):**")
-        if start_custom_label and start_custom_label in start_options:
-            curr_start_idx = start_options.index(start_custom_label)
-        elif f"🔖 {st.session_state.start_name}" in start_options:
-            curr_start_idx = start_options.index(f"🔖 {st.session_state.start_name}")
-        elif st.session_state.start_name in start_options:
-            curr_start_idx = start_options.index(st.session_state.start_name)
-        else:
-            curr_start_idx = 0
-
-        start_mode = st.selectbox(
-            "Origin",
-            start_options,
-            index=curr_start_idx,
-            key="drawer_start_select",
+        origin_search_q = st.text_input(
+            "Search Origin:",
+            placeholder="Search address, landmark, or city anywhere...",
+            key="drawer_origin_search_input",
             label_visibility="collapsed",
         )
-        if start_mode == MY_LOCATION_LABEL:
-            st.session_state.start_name = MY_LOCATION_LABEL
-            st.session_state.start_coords = (st.session_state.my_location[0], st.session_state.my_location[1])
-        elif start_mode.startswith("🔖 "):
-            bm_name = start_mode.replace("🔖 ", "", 1).strip()
-            bm_match = next((b for b in bookmarks if b["name"] == bm_name), None)
-            if bm_match:
-                st.session_state.start_name = bm_match["name"]
-                st.session_state.start_coords = (bm_match["lat"], bm_match["lon"])
-        elif start_mode == start_custom_label:
-            # Keep existing custom coordinates and name
-            pass
-        elif start_mode == "🔍 Search Address / Custom Place...":
-            start_query = st.text_input(
-                "Search Origin",
-                value=st.session_state.start_name if st.session_state.start_name not in RANCHI_LANDMARKS and st.session_state.start_name != MY_LOCATION_LABEL and not any(bm["name"] == st.session_state.start_name for bm in bookmarks) else "",
-                placeholder="Type address or GPS coordinates...",
-                key="drawer_start_query",
+        if origin_search_q.strip():
+            o_sugs = search_locations(origin_search_q.strip(), limit=6)
+            if o_sugs:
+                chosen_o = st.selectbox(
+                    "Matches for Origin:",
+                    options=o_sugs,
+                    format_func=lambda s: f"📍 {s.format_display_label()}",
+                    key="select_drawer_origin_match",
+                    label_visibility="collapsed",
+                )
+                if st.button("✅ Set as Origin", key="btn_apply_origin_match", use_container_width=True):
+                    st.session_state.start_name = chosen_o.name
+                    st.session_state.start_coords = (chosen_o.lat, chosen_o.lon)
+                    st.session_state.route_result = None
+                    st.rerun()
+            else:
+                st.caption(f"No results for '{origin_search_q}'. Try another search or GPS coordinates.")
+
+        col_orig_my, col_orig_pre = st.columns([1.1, 1.9])
+        with col_orig_my:
+            if st.button("🔵 My Location", key="btn_orig_use_my_loc", use_container_width=True, help="Set origin to your current location"):
+                st.session_state.start_name = MY_LOCATION_LABEL
+                st.session_state.start_coords = (st.session_state.my_location[0], st.session_state.my_location[1])
+                st.session_state.route_result = None
+                st.rerun()
+        with col_orig_pre:
+            orig_pre_opts = ["-- Preset Landmarks --"]
+            for bm in bookmarks:
+                orig_pre_opts.append(f"⭐ {bm['name']}")
+            orig_pre_opts.extend(sorted(list(available_landmarks.keys())))
+            chosen_orig_pre = st.selectbox(
+                "Preset Origin",
+                orig_pre_opts,
+                key="select_preset_origin_quick",
                 label_visibility="collapsed",
             )
-            if start_query.strip():
-                sugs = search_locations(start_query.strip(), limit=8)
-                if sugs:
-                    chosen_s = st.selectbox(
-                        "Matches",
-                        options=sugs,
-                        format_func=lambda s: f"📍 {s.format_display_label()}",
-                        key="drawer_chosen_start_sug",
-                        label_visibility="collapsed",
-                    )
-                    st.session_state.start_name = chosen_s.name
-                    st.session_state.start_coords = (chosen_s.lat, chosen_s.lon)
-        else:
-            st.session_state.start_name = start_mode
-            st.session_state.start_coords = RANCHI_LANDMARKS[start_mode]
+            if chosen_orig_pre and chosen_orig_pre != "-- Preset Landmarks --":
+                if chosen_orig_pre.startswith("⭐ "):
+                    bname = chosen_orig_pre[2:]
+                    bmatch = next((b for b in bookmarks if b["name"] == bname), None)
+                    if bmatch:
+                        st.session_state.start_name = bmatch["name"]
+                        st.session_state.start_coords = (bmatch["lat"], bmatch["lon"])
+                elif chosen_orig_pre in available_landmarks:
+                    st.session_state.start_name = chosen_orig_pre
+                    st.session_state.start_coords = available_landmarks[chosen_orig_pre]
+                st.session_state.route_result = None
+                st.rerun()
 
-        st.caption(f"📍 `{st.session_state.start_coords[0]:.4f}, {st.session_state.start_coords[1]:.4f}`")
-
+        st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
         # Swap button
-        col_swap, _ = st.columns([1.5, 1])
-        with col_swap:
-            st.button("⇄ Swap Start & Dest", on_click=swap_locations, use_container_width=True)
+        if st.button("⇄ Swap Start & Destination", on_click=swap_locations, use_container_width=True, key="btn_swap_drawer"):
+            st.session_state.route_result = None
+            st.rerun()
 
-        # Build Destination options list, including bookmarks
-        dest_custom_label = f"🎯 {st.session_state.dest_name}" if (
-            st.session_state.dest_name
-            and st.session_state.dest_name != MY_LOCATION_LABEL
-            and st.session_state.dest_name not in RANCHI_LANDMARKS
-            and not any(bm["name"] == st.session_state.dest_name for bm in bookmarks)
-        ) else None
+        st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
 
-        dest_options = [MY_LOCATION_LABEL]
-        for bm in bookmarks:
-            dest_options.append(f"🔖 {bm['name']}")
-        if dest_custom_label:
-            dest_options.append(dest_custom_label)
-        dest_options.append("🔍 Search Address / Custom Place...")
-        dest_options.extend(RANCHI_LANDMARKS.keys())
+        # ── 2. Destination (To) ──
+        st.markdown("**🏁 To (Destination):**")
+        dest_lat, dest_lon = st.session_state.dest_coords
+        st.markdown(
+            f"""
+            <div style="background:#FEF2F2; border:1px solid #FECACA; border-radius:8px; padding:8px 12px; margin-bottom:8px;">
+                <b style="color:#991B1B; font-size:14px;">🏁 {st.session_state.dest_name}</b><br>
+                <span style="color:#DC2626; font-size:11px;">GPS: {dest_lat:.5f}, {dest_lon:.5f}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-        # To (Destination)
-        st.markdown("**To (Destination):**")
-        if dest_custom_label and dest_custom_label in dest_options:
-            curr_dest_idx = dest_options.index(dest_custom_label)
-        elif f"🔖 {st.session_state.dest_name}" in dest_options:
-            curr_dest_idx = dest_options.index(f"🔖 {st.session_state.dest_name}")
-        elif st.session_state.dest_name in dest_options:
-            curr_dest_idx = dest_options.index(st.session_state.dest_name)
-        else:
-            curr_dest_idx = min(3, len(dest_options) - 1)
-
-        dest_mode = st.selectbox(
-            "Destination",
-            dest_options,
-            index=curr_dest_idx,
-            key="drawer_dest_select",
+        dest_search_q = st.text_input(
+            "Search Destination:",
+            placeholder="Search address, landmark, or city anywhere...",
+            key="drawer_dest_search_input",
             label_visibility="collapsed",
         )
-        if dest_mode == MY_LOCATION_LABEL:
-            st.session_state.dest_name = MY_LOCATION_LABEL
-            st.session_state.dest_coords = (st.session_state.my_location[0], st.session_state.my_location[1])
-        elif dest_mode.startswith("🔖 "):
-            bm_name = dest_mode.replace("🔖 ", "", 1).strip()
-            bm_match = next((b for b in bookmarks if b["name"] == bm_name), None)
-            if bm_match:
-                st.session_state.dest_name = bm_match["name"]
-                st.session_state.dest_coords = (bm_match["lat"], bm_match["lon"])
-        elif dest_mode == dest_custom_label:
-            # Keep existing custom coordinates and name
-            pass
-        elif dest_mode == "🔍 Search Address / Custom Place...":
-            dest_query = st.text_input(
-                "Search Destination",
-                value=st.session_state.dest_name if st.session_state.dest_name not in RANCHI_LANDMARKS and st.session_state.dest_name != MY_LOCATION_LABEL and not any(bm["name"] == st.session_state.dest_name for bm in bookmarks) else "",
-                placeholder="Type address or GPS coordinates...",
-                key="drawer_dest_query",
-                label_visibility="collapsed",
-            )
-            if dest_query.strip():
-                sugs = search_locations(dest_query.strip(), limit=8)
-                if sugs:
-                    chosen_d = st.selectbox(
-                        "Matches",
-                        options=sugs,
-                        format_func=lambda s: f"🎯 {s.format_display_label()}",
-                        key="drawer_chosen_dest_sug",
-                        label_visibility="collapsed",
-                    )
+        if dest_search_q.strip():
+            d_sugs = search_locations(dest_search_q.strip(), limit=6)
+            if d_sugs:
+                chosen_d = st.selectbox(
+                    "Matches for Destination:",
+                    options=d_sugs,
+                    format_func=lambda s: f"🎯 {s.format_display_label()}",
+                    key="select_drawer_dest_match",
+                    label_visibility="collapsed",
+                )
+                if st.button("✅ Set as Destination", key="btn_apply_dest_match", use_container_width=True):
                     st.session_state.dest_name = chosen_d.name
                     st.session_state.dest_coords = (chosen_d.lat, chosen_d.lon)
-        else:
-            st.session_state.dest_name = dest_mode
-            st.session_state.dest_coords = RANCHI_LANDMARKS[dest_mode]
+                    st.session_state.route_result = None
+                    st.rerun()
+            else:
+                st.caption(f"No results for '{dest_search_q}'. Try another search or GPS coordinates.")
 
-        st.caption(f"🎯 `{st.session_state.dest_coords[0]:.4f}, {st.session_state.dest_coords[1]:.4f}`")
+        col_dest_my, col_dest_pre = st.columns([1.1, 1.9])
+        with col_dest_my:
+            if st.button("🔵 My Location", key="btn_dest_use_my_loc", use_container_width=True, help="Set destination to your current location"):
+                st.session_state.dest_name = MY_LOCATION_LABEL
+                st.session_state.dest_coords = (st.session_state.my_location[0], st.session_state.my_location[1])
+                st.session_state.route_result = None
+                st.rerun()
+        with col_dest_pre:
+            dest_pre_opts = ["-- Preset Landmarks --"]
+            for bm in bookmarks:
+                dest_pre_opts.append(f"⭐ {bm['name']}")
+            dest_pre_opts.extend(sorted(list(available_landmarks.keys())))
+            chosen_dest_pre = st.selectbox(
+                "Preset Destination",
+                dest_pre_opts,
+                key="select_preset_dest_quick",
+                label_visibility="collapsed",
+            )
+            if chosen_dest_pre and chosen_dest_pre != "-- Preset Landmarks --":
+                if chosen_dest_pre.startswith("⭐ "):
+                    bname = chosen_dest_pre[2:]
+                    bmatch = next((b for b in bookmarks if b["name"] == bname), None)
+                    if bmatch:
+                        st.session_state.dest_name = bmatch["name"]
+                        st.session_state.dest_coords = (bmatch["lat"], bmatch["lon"])
+                elif chosen_dest_pre in available_landmarks:
+                    st.session_state.dest_name = chosen_dest_pre
+                    st.session_state.dest_coords = available_landmarks[chosen_dest_pre]
+                st.session_state.route_result = None
+                st.rerun()
 
     else:
         # Fictional towns
@@ -882,7 +961,9 @@ def render_bookmarks_panel(is_realworld: bool) -> None:
             key="input_new_bookmark_name",
         )
 
-        source_choices = ["📍 Ranchi Landmark", "🔍 Search Address", "🔵 Current Location"]
+        is_worldwide = "Worldwide" in st.session_state.get("network_mode", "Worldwide")
+        all_landmarks = {**WORLDWIDE_LANDMARKS, **RANCHI_LANDMARKS} if is_worldwide else RANCHI_LANDMARKS
+        source_choices = ["📍 Preset Landmark", "🔍 Search Address", "🔵 Current Location"]
         if st.session_state.get("last_clicked_coords"):
             source_choices.append("🖱️ Last Clicked Map Point")
 
@@ -897,14 +978,14 @@ def render_bookmarks_panel(is_realworld: bool) -> None:
         cand_lon: Optional[float] = None
         cand_addr: str = ""
 
-        if source_type == "📍 Ranchi Landmark":
+        if source_type == "📍 Preset Landmark":
             chosen_landmark = st.selectbox(
                 "Choose Landmark:",
-                options=sorted(list(RANCHI_LANDMARKS.keys())),
+                options=sorted(list(all_landmarks.keys())),
                 key="select_bm_landmark",
             )
             if chosen_landmark:
-                cand_lat, cand_lon = RANCHI_LANDMARKS[chosen_landmark]
+                cand_lat, cand_lon = all_landmarks[chosen_landmark]
                 cand_addr = chosen_landmark
         elif source_type == "🔍 Search Address":
             search_query = st.text_input(
@@ -1067,10 +1148,14 @@ def main() -> None:
         st.caption("Settings & Network Configuration")
         network_mode = st.radio(
             "Road Network",
-            ["Real-World Map (Ranchi, India)", "Fictional Regional Map (Stage 1)"],
+            [
+                "🌍 Worldwide Real-World Map (Global Search & Routing)",
+                "📍 Ranchi Road Network (Local Graph & Traffic Simulation)",
+                "🗺️ Fictional Regional Map (Stage 1)",
+            ],
             index=0,
             key="network_mode",
-            help="Choose between real-world OpenStreetMap data and the Stage 1 fictional regional network.",
+            help="Worldwide Mode routes anywhere on Earth using OSM OSRM. Ranchi Mode uses the local offline graph with traffic simulation.",
         )
         is_realworld = "Real-World" in network_mode
 
@@ -1085,7 +1170,7 @@ def main() -> None:
         with col_search_input:
             search_val = st.text_input(
                 "Search location, landmark, or address:",
-                placeholder="🔍 Search location or address (e.g. Radisson Blu, Albert Ekka, Nucleus Mall, Station Road)...",
+                placeholder="🔍 Search any place worldwide (e.g. Eiffel Tower, Times Square, Tokyo Tower, London, Marine Drive)...",
                 key="global_search_input",
                 label_visibility="collapsed",
             )
@@ -1176,10 +1261,12 @@ def main() -> None:
             st.info("💡 **Set your location:** Choose your area from the dropdown, search any place, or click anywhere on the map below!")
             col_preset, col_custom_search = st.columns([1.5, 2.5])
             with col_preset:
+                is_worldwide = "Worldwide" in st.session_state.get("network_mode", "Worldwide")
+                all_lm = {**WORLDWIDE_LANDMARKS, **RANCHI_LANDMARKS} if is_worldwide else RANCHI_LANDMARKS
                 preset_choices = ["-- Select your neighborhood / area --"]
                 for bm in st.session_state.get("bookmarks", []):
                     preset_choices.append(f"⭐ Bookmark: {bm['name']}")
-                preset_choices.extend(sorted(list(RANCHI_LANDMARKS.keys())))
+                preset_choices.extend(sorted(list(all_lm.keys())))
                 chosen_preset = st.selectbox(
                     "Quick Area Select:",
                     preset_choices,
@@ -1193,8 +1280,8 @@ def main() -> None:
                             if bm_match:
                                 st.session_state.my_location = (bm_match["lat"], bm_match["lon"], bm_match["name"])
                                 st.session_state.searched_location = st.session_state.my_location
-                        else:
-                            coords = RANCHI_LANDMARKS[chosen_preset]
+                        elif chosen_preset in all_lm:
+                            coords = all_lm[chosen_preset]
                             st.session_state.my_location = (coords[0], coords[1], chosen_preset)
                             st.session_state.searched_location = st.session_state.my_location
                         st.session_state.show_location_picker = False
@@ -1204,7 +1291,7 @@ def main() -> None:
             with col_custom_search:
                 my_loc_query = st.text_input(
                     "Or search any custom address or place:",
-                    placeholder="e.g. Tagore Hill, Harmu Housing Colony, Plaza Road, Station Road...",
+                    placeholder="e.g. Eiffel Tower, Times Square, Tokyo Tower, Tagore Hill, Plaza Road...",
                     key="my_loc_search_query",
                 )
                 if my_loc_query.strip():

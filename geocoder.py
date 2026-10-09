@@ -66,13 +66,29 @@ def _rate_limit_pause(min_interval: float = 0.5) -> None:
     _LAST_REQUEST_TIME = time.time()
 
 
+from worldwide_router import WORLDWIDE_LANDMARKS
+
+
 def search_local_landmarks(query: str) -> List[GeocodedLocation]:
-    """Search known local landmarks using case-insensitive substring matching."""
+    """Search known local and worldwide landmarks using case-insensitive substring matching."""
     q = query.strip().lower()
     if not q:
         return []
 
     results: List[GeocodedLocation] = []
+    # 1. Search worldwide landmarks
+    for name, (lat, lon) in WORLDWIDE_LANDMARKS.items():
+        if q in name.lower() or name.lower() in q:
+            results.append(
+                GeocodedLocation(
+                    name=name,
+                    display_name=f"{name} (World Landmark)",
+                    lat=lat,
+                    lon=lon,
+                    source="landmark",
+                )
+            )
+    # 2. Search Ranchi landmarks
     for name, (lat, lon) in RANCHI_LANDMARKS.items():
         if q in name.lower() or name.lower() in q:
             results.append(
@@ -90,7 +106,7 @@ def search_local_landmarks(query: str) -> List[GeocodedLocation]:
 def search_locations(
     query: str,
     limit: int = 8,
-    focus_ranchi: bool = True,
+    focus_ranchi: bool = False,
 ) -> List[GeocodedLocation]:
     """
     Search for locations matching `query` using OpenStreetMap Nominatim by default,

@@ -123,10 +123,12 @@ def _add_search_widget(m: Any) -> None:
     """Inject a Google Maps style floating location search bar into the Folium map."""
     import folium
     from osm_loader import RANCHI_LANDMARKS
+    from worldwide_router import WORLDWIDE_LANDMARKS
 
+    all_known: dict[str, tuple[float, float]] = {**WORLDWIDE_LANDMARKS, **RANCHI_LANDMARKS}
     landmarks_list = [
         {"name": name, "lat": lat, "lon": lon, "source": "landmark"}
-        for name, (lat, lon) in RANCHI_LANDMARKS.items()
+        for name, (lat, lon) in all_known.items()
     ]
     landmarks_json = json.dumps(landmarks_list)
 
@@ -308,7 +310,7 @@ def _add_search_widget(m: Any) -> None:
                         name: lm.name,
                         lat: lm.lat,
                         lon: lm.lon,
-                        display: lm.name + ', Ranchi'
+                        display: lm.name
                     }});
                 }}
             }});
@@ -318,7 +320,7 @@ def _add_search_widget(m: Any) -> None:
             clearTimeout(debounceTimer);
             if (q.length >= 3) {{
                 debounceTimer = setTimeout(function() {{
-                    var url = 'https://nominatim.openstreetmap.org/search?format=json&limit=5&q=' + encodeURIComponent(q + ', Ranchi');
+                    var url = 'https://nominatim.openstreetmap.org/search?format=json&limit=5&q=' + encodeURIComponent(q);
                     fetch(url)
                         .then(function(res) {{ return res.json(); }})
                         .then(function(data) {{

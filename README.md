@@ -34,11 +34,12 @@ Both pathfinding algorithms are built from first principles using Python's stand
 ## ✨ Features
 
 - **Interactive Streamlit Web Interface (`app.py`)**:
+  - **🌍 Worldwide Real-World Navigation & Search**: Search any place, address, city, or landmark worldwide across 200+ countries and find real-time road driving routes with turn-by-turn guidance, distance, ETA, and alternative paths using OpenStreetMap OSRM.
   - **My Current Location Feature (`🔵`)**: Visualizes user's current location with a glowing blue dot marker (`🔵 My Current Location`), built-in Leaflet GPS geolocation (`LocateControl`), and single-click routing (`[ 🚩 Route From My Location ]` / `[ 🏁 Route To My Location ]`).
-  - **Dedicated Location Search Bar**: Search any address, landmark, or place with real-time autocompletion suggestions.
+  - **Dedicated Location Search Bar**: Search any address, landmark, or place globally with real-time autocompletion suggestions.
   - **Instant Map Pinning**: Selecting any search result immediately places a distinctive purple pin (`🔍`) and centers the map on that location.
   - **Quick Action Endpoints**: Set any searched location or current location as Origin (`🚩`) or Destination (`🏁`) with a single click.
-  - **Embedded Leaflet Search Widget**: Floating in-map search bar directly inside Folium maps for instant client-side searching and smooth `flyTo` camera panning.
+  - **Embedded Leaflet Search Widget**: Floating in-map search bar directly inside Folium maps for instant client-side worldwide searching and smooth `flyTo` camera panning.
   - **Streamlined User Experience**: Unnecessary algorithmic complexity (algorithm selectors and CPU benchmark numbers) has been removed; the app automatically executes the optimal pathfinding algorithm under the hood.
   - **Real-World Navigation Metrics**: Realistic travel times:
     - 📏 **Total Distance** ($\text{km}$ or $\text{m}$)
@@ -48,7 +49,7 @@ Both pathfinding algorithms are built from first principles using Python's stand
   - **Turn-by-Turn Road Corridor Guidance**: Step-by-step street directions grouping consecutive segments into named corridors.
   - **Interactive Map Selection**: Click anywhere on the map to set origin, destination, or current location pins with automatic reverse geocoding.
   - **⇄ Swap Button**: Instant one-click interchange of start and destination points.
-  - **Traffic-Aware Route Estimation**: choose Shortest Distance or Traffic-Aware routing, set a departure time or quick preset, and compare the recommended route's modeled time with the shortest-distance route.
+  - **Traffic-Aware Route Estimation**: In Ranchi Mode, choose Shortest Distance or Traffic-Aware routing, set a departure time or quick preset, and compare the recommended route's modeled time with the shortest-distance route.
 - **Two Pure-Python Algorithms (From Scratch)**:
   - **Dijkstra's Algorithm**: Exhaustive uniform-cost search tracking cumulative distance $g(n)$.
   - **A\* Search Algorithm**: Informed best-first search tracking $f(n) = g(n) + h(n)$ using the great-circle Haversine distance heuristic.
@@ -56,11 +57,12 @@ Both pathfinding algorithms are built from first principles using Python's stand
 - **Real-World OpenStreetMap Ingestion**: Ingests real road segments and intersections into a directed, weighted adjacency-list graph via **OSMnx**.
 - **Instant Sub-50ms Offline Startup**: Pre-cached and serialized road network (`data/ranchi_network.json`) enables instant offline routing without network overhead.
 - **Resilient Geocoding Engine (`geocoder.py`)**:
+  - Worldwide OpenStreetMap Nominatim geocoding and reverse geocoding.
   - Complies with Nominatim usage policy (custom User-Agent and $0.5\text{s}$ rate throttling).
   - In-memory LRU query cache to eliminate redundant HTTP requests.
-  - Graceful degradation: falls back immediately to built-in local landmarks on network timeouts or API limits.
+  - Graceful degradation: falls back immediately to built-in local and world landmarks on network timeouts or API limits.
 - **Full Backward Compatibility**: 100% of Stage 1, Stage 2, and Stage 3 CLI commands, fictional network mode, and tests are preserved.
-- **Comprehensive Automated Test Suite**: 73 automated tests verifying graph structures, geocoding resilience, search bar pinning, current location marker, travel time estimation, map visualization, and CLI commands.
+- **Comprehensive Automated Test Suite**: 106 automated tests verifying graph structures, geocoding resilience, worldwide route generation, search bar pinning, current location marker, travel time estimation, map visualization, and CLI commands.
 
 ---
 
