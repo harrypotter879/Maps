@@ -1670,10 +1670,103 @@ class TestWorldwideNavigation(unittest.TestCase):
             start_label="Eiffel Tower",
             dest_label="Louvre",
             show_hud=False,
+            current_location=(23.3191843, 85.2987681, "Ranchi"),
         )
         html = m._repr_html_()
         self.assertIn("folium", html.lower())
         self.assertGreater(len(html), 1000)
+
+        # Ensure fit_bounds does NOT contain distant Ranchi coordinates
+        # Folium fit_bounds renders as fitBounds([[...], [...]])
+        self.assertIn("fitBounds", html)
+        # Check that the fitBounds JS array does not include Ranchi lat/lon
+        import re
+        fit_bounds_matches = re.findall(r'fitBounds\(\s*(\[\[.*?\]\])', html, re.DOTALL)
+        self.assertTrue(len(fit_bounds_matches) > 0)
+        bounds_content = fit_bounds_matches[0]
+        self.assertNotIn("23.319", bounds_content)
+        self.assertNotIn("85.298", bounds_content)
+
+    def test_endpoint_markers_suppress_duplicate_purple_search_pin(self) -> None:
+        """Verify purple search pin is omitted when location matches origin or destination."""
+        from worldwide_router import fetch_worldwide_route
+        from map_view import build_folium_map, build_empty_map
+
+        p1 = (48.8584, 2.2945)
+        p2 = (48.8606, 2.3376)
+        graph, results = fetch_worldwide_route(p1, p2, "Eiffel Tower", "Louvre")
+
+        # In build_folium_map
+        m_route = build_folium_map(
+            graph=graph,
+            result=results[0],
+            start_coord=p1,
+            dest_coord=p2,
+            start_label="Eiffel Tower",
+            dest_label="Louvre",
+            searched_point=(48.8606, 2.3376, "Louvre"),  # Same as dest
+        )
+        html_route = m_route._repr_html_()
+        self.assertNotIn("🔍 Searched Place", html_route)
+        self.assertIn("🏁 Destination", html_route)
+
+        # In build_empty_map
+        m_empty = build_empty_map(
+            dest_point=(48.8606, 2.3376, "Louvre"),
+            searched_point=(48.8606, 2.3376, "Louvre"),
+        )
+        html_empty = m_empty._repr_html_()
+        self.assertNotIn("🔍 Searched Place", html_empty)
+        self.assertIn("Destination:", html_empty)
+
+    def test_build_folium_map_none_coordinates_graceful_fallback(self) -> None:
+        """Verify build_folium_map handles None start_coord or dest_coord without raising TypeError."""
+        from map_view import build_folium_map
+        from dijkstra import PathResult
+        from graph import Graph
+
+        dummy_result = PathResult(
+            source="A",
+            destination="B",
+            path=["A", "B"],
+            legs=[],
+            total_distance=100.0,
+            execution_time_sec=0.001,
+            visited_nodes_count=2,
+            found=True,
+            total_cost=10.0,
+        )
+        g = Graph()
+
+        # None start_coord
+        m1 = build_folium_map(
+            graph=g,
+            result=dummy_result,
+            start_coord=None,
+            dest_coord=(23.36, 85.32),
+        )
+        self.assertIsNotNone(m1)
+
+        # None dest_coord
+        m2 = build_folium_map(
+            graph=g,
+            result=dummy_result,
+            start_coord=(23.36, 85.32),
+            dest_coord=None,
+        )
+        self.assertIsNotNone(m2)
+
+    def test_init_session_state_preserves_albert_ekka_origin(self) -> None:
+        """Verify init_session_state does not wipe origin when set to Albert Ekka Chowk."""
+        import streamlit as st
+        from app import init_session_state
+
+        st.session_state.start_name = "Albert Ekka Chowk"
+        st.session_state.start_coords = (23.3699, 85.3253)
+        init_session_state()
+
+        self.assertEqual(st.session_state.start_name, "Albert Ekka Chowk")
+        self.assertEqual(st.session_state.start_coords, (23.3699, 85.3253))
 
 
 if __name__ == "__main__":

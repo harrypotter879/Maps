@@ -456,11 +456,17 @@ def build_empty_map(
     map_center = center
     map_zoom = zoom
 
-    if current_location and not start_point and not dest_point and not searched_point:
-        map_center = (current_location[0], current_location[1])
+    if start_point and not dest_point:
+        map_center = (start_point[0], start_point[1])
+        map_zoom = 15
+    elif dest_point and not start_point:
+        map_center = (dest_point[0], dest_point[1])
         map_zoom = 15
     elif searched_point and not start_point and not dest_point:
         map_center = (searched_point[0], searched_point[1])
+        map_zoom = 15
+    elif current_location and not start_point and not dest_point and not searched_point:
+        map_center = (current_location[0], current_location[1])
         map_zoom = 15
 
     m = folium.Map(
@@ -499,22 +505,32 @@ def build_empty_map(
 
     if searched_point:
         s_lat, s_lon, s_label = searched_point
-        folium.Marker(
-            location=[s_lat, s_lon],
-            popup=folium.Popup(
-                f"<div style='font-family: Arial, sans-serif; min-width: 150px;'>"
-                f"<h4 style='margin: 0 0 4px 0; color: #7C3AED;'>🔍 Searched Place</h4>"
-                f"<b>{s_label}</b><br>"
-                f"<span style='font-size: 11px; color: #666;'>Lat: {s_lat:.5f}, Lon: {s_lon:.5f}</span>"
-                f"</div>",
-                max_width=250,
-            ),
-            tooltip=f"🔍 Searched: {s_label}",
-            icon=folium.Icon(color="purple", icon="search", prefix="fa"),
-        ).add_to(m)
+        from astar import haversine_distance
+        show_search = True
+        if start_point and haversine_distance((s_lat, s_lon), (start_point[0], start_point[1])) < 300:
+            show_search = False
+        if dest_point and haversine_distance((s_lat, s_lon), (dest_point[0], dest_point[1])) < 300:
+            show_search = False
+        if show_search:
+            folium.Marker(
+                location=[s_lat, s_lon],
+                popup=folium.Popup(
+                    f"<div style='font-family: Arial, sans-serif; min-width: 150px;'>"
+                    f"<h4 style='margin: 0 0 4px 0; color: #7C3AED;'>🔍 Searched Place</h4>"
+                    f"<b>{s_label}</b><br>"
+                    f"<span style='font-size: 11px; color: #666;'>Lat: {s_lat:.5f}, Lon: {s_lon:.5f}</span>"
+                    f"</div>",
+                    max_width=250,
+                ),
+                tooltip=f"🔍 Searched: {s_label}",
+                icon=folium.Icon(color="purple", icon="search", prefix="fa"),
+            ).add_to(m)
 
     if current_location:
         _add_current_location_marker(m, current_location)
+
+    if start_point and dest_point:
+        m.fit_bounds([[start_point[0], start_point[1]], [dest_point[0], dest_point[1]]], padding=[30, 30])
 
     _add_locate_control(m)
 
@@ -547,6 +563,18 @@ def build_folium_map(
     If `traffic_mode` is set, roads around the route are coloured by modeled traffic.
     """
     import folium
+
+    if not start_coord or not dest_coord:
+        return build_empty_map(
+            start_point=(start_coord[0], start_coord[1], start_label) if start_coord else None,
+            dest_point=(dest_coord[0], dest_coord[1], dest_label) if dest_coord else None,
+            searched_point=searched_point,
+            current_location=current_location,
+            include_search_bar=include_search_bar,
+            graph=graph,
+            traffic_mode=traffic_mode,
+            departure_time=departure_time,
+        )
 
     mid_lat = (start_coord[0] + dest_coord[0]) / 2.0
     mid_lon = (start_coord[1] + dest_coord[1]) / 2.0
@@ -793,27 +821,29 @@ def build_folium_map(
         icon=folium.Icon(color="red", icon="flag", prefix="fa"),
     ).add_to(m)
 
-    # Searched Location Marker (Purple) if present
+    # Searched Location Marker (Purple) if present (only if not coinciding with route endpoints)
     if searched_point:
         s_lat, s_lon, s_label = searched_point
-        s_html = f"""
-        <div style="font-family: Arial, sans-serif; min-width: 150px;">
-            <h4 style="margin: 0 0 4px 0; color: #7C3AED;">🔍 Searched Place</h4>
-            <b>{s_label}</b><br>
-            <span style="font-size: 11px; color: #666;">Lat: {s_lat:.5f}, Lon: {s_lon:.5f}</span>
-        </div>
-        """
-        folium.Marker(
-            location=[s_lat, s_lon],
-            popup=folium.Popup(s_html, max_width=250),
-            tooltip=f"🔍 Searched: {s_label}",
-            icon=folium.Icon(color="purple", icon="search", prefix="fa"),
-        ).add_to(m)
-        all_bounds_points.append([s_lat, s_lon])
+        from astar import haversine_distance
+        dist_s = haversine_distance((s_lat, s_lon), start_coord)
+        dist_d = haversine_distance((s_lat, s_lon), dest_coord)
+        if dist_s > 300 and dist_d > 300:
+            s_html = f"""
+            <div style="font-family: Arial, sans-serif; min-width: 150px;">
+                <h4 style="margin: 0 0 4px 0; color: #7C3AED;">🔍 Searched Place</h4>
+                <b>{s_label}</b><br>
+                <span style="font-size: 11px; color: #666;">Lat: {s_lat:.5f}, Lon: {s_lon:.5f}</span>
+            </div>
+            """
+            folium.Marker(
+                location=[s_lat, s_lon],
+                popup=folium.Popup(s_html, max_width=250),
+                tooltip=f"🔍 Searched: {s_label}",
+                icon=folium.Icon(color="purple", icon="search", prefix="fa"),
+            ).add_to(m)
 
     if current_location:
         _add_current_location_marker(m, current_location)
-        all_bounds_points.append([current_location[0], current_location[1]])
 
     _add_locate_control(m)
 
