@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+  <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+  <body>
+    <script>
+      // Minimal Streamlit v1 component bridge. The browser prompts for GPS only
+      // after the user activates the AQI control and this component is mounted.
+      const post = (type, extra = {}) => parent.postMessage({
+        isStreamlitMessage: true,
+        type,
+        ...extra,
+      }, "*");
+
+      post("streamlit:componentReady", { apiVersion: 1 });
+      post("streamlit:setFrameHeight", { height: 0 });
+
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          ({ coords }) => post("streamlit:setComponentValue", {
+            value: { latitude: coords.latitude, longitude: coords.longitude },
+          }),
+          (error) => post("streamlit:setComponentValue", {
+            value: { error: error.message || "Location access was denied." },
+          }),
+          { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 },
+        );
+      } else {
+        post("streamlit:setComponentValue", {
+          value: { error: "This browser does not support geolocation." },
+        });
+      }
+    </script>
+  </body>
+</html>

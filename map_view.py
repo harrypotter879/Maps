@@ -103,6 +103,170 @@ def _add_traffic_layer(
     m.get_root().html.add_child(legend)
 
 
+def _add_aqi_layer(
+    m: Any,
+    aqi_data: Optional[Dict[str, Any]] = None,
+    waqi_token: str = "demo",
+) -> None:
+    """
+    Overlay WAQI (World Air Quality Index) Map Tiles, active area AQI marker, and
+    Google Maps-style bottom floating AQI scale & legend on the Folium map.
+    """
+    import folium
+
+    # 1. Tile layer from WAQI (World Air Quality Index)
+    token_str = (waqi_token or "demo").strip()
+    waqi_tile_url = f"https://tiles.aqicn.org/tiles/usepa-aqi/{{z}}/{{x}}/{{y}}.png?token={token_str}"
+    folium.TileLayer(
+        tiles=waqi_tile_url,
+        name="Air Quality (WAQI)",
+        attr='Air Quality Tiles &copy; <a href="https://waqi.info/" target="_blank">World Air Quality Index (WAQI)</a>',
+        overlay=True,
+        control=False,
+        opacity=0.82,
+        max_zoom=19,
+    ).add_to(m)
+
+    # 2. Pulsing AQI badge marker for the active inspected location
+    if aqi_data and "lat" in aqi_data and "lon" in aqi_data:
+        lat = aqi_data["lat"]
+        lon = aqi_data["lon"]
+        aqi_val = aqi_data.get("aqi", 0)
+        color = aqi_data.get("color", "#EAB308")
+        cat_label = aqi_data.get("category", "Moderate")
+        st_name = aqi_data.get("station_name", "Inspected Area")
+        desc = aqi_data.get("description", "")
+        advisory = aqi_data.get("advisory", "")
+        pollutants = aqi_data.get("pollutants") or {}
+        dom_pol = aqi_data.get("dominant_pollutant", "PM2.5")
+
+        badge_html = f'''
+        <div style="
+            position: relative;
+            width: 44px;
+            height: 44px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: {color};
+            color: #FFFFFF;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-weight: 800;
+            font-size: 13px;
+            border-radius: 50%;
+            border: 3px solid #FFFFFF;
+            box-shadow: 0 4px 14px rgba(0,0,0,0.38), 0 0 0 5px {color}66;
+            transform: translate(-22px, -22px);
+            cursor: pointer;
+        ">
+            {aqi_val}
+        </div>
+        '''
+
+        popup_html = f"""
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; min-width: 220px; padding: 4px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                <span style="font-size:11px; font-weight:700; color:#64748B; text-transform:uppercase; letter-spacing:0.5px;">🍃 Air Quality Index</span>
+                <span style="background:{color}; color:#fff; font-size:11px; font-weight:700; padding:2px 8px; border-radius:12px;">{aqi_val} AQI</span>
+            </div>
+            <h4 style="margin:0 0 2px 0; color:#0F172A; font-size:14px; font-weight:700;">{st_name}</h4>
+            <div style="font-size:12px; font-weight:600; color:{color}; margin-bottom:6px;">{cat_label} (Dominant: {dom_pol})</div>
+            <div style="font-size:11px; color:#475569; margin-bottom:8px; line-height:1.4;">{advisory or desc}</div>
+            <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:6px; padding:6px; font-size:11px; display:grid; grid-template-columns:1fr 1fr; gap:4px 8px;">
+                <div><b>PM2.5:</b> {pollutants.get('pm25', 'N/A')} µg/m³</div>
+                <div><b>PM10:</b> {pollutants.get('pm10', 'N/A')} µg/m³</div>
+                <div><b>O₃:</b> {pollutants.get('o3', 'N/A')} ppb</div>
+                <div><b>NO₂:</b> {pollutants.get('no2', 'N/A')} ppb</div>
+            </div>
+            <div style="margin-top:6px; font-size:10px; color:#94A3B8; text-align:right;">Source: {aqi_data.get('source', 'WAQI')}</div>
+        </div>
+        """
+
+        folium.Marker(
+            location=[lat, lon],
+            popup=folium.Popup(popup_html, max_width=290),
+            tooltip=f"🍃 Air Quality: {aqi_val} AQI ({cat_label}) - {st_name}",
+            icon=folium.DivIcon(html=badge_html, icon_size=(44, 44), icon_anchor=(22, 22)),
+        ).add_to(m)
+
+    # 3. Google Maps style floating bottom AQI scale card
+    reading_sub_html = ""
+    if aqi_data:
+        cur_aqi = aqi_data.get("aqi", "--")
+        cur_color = aqi_data.get("color", "#16A34A")
+        cur_cat = aqi_data.get("category", "")
+        cur_name = aqi_data.get("station_name", "Inspected Area")
+        reading_sub_html = f"""
+        <div style="margin-top:8px; padding-top:6px; border-top:1px solid #E2E8F0; display:flex; justify-content:space-between; align-items:center; font-size:12px;">
+            <span style="color:#1E293B; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:210px;" title="{cur_name}">📍 {cur_name}</span>
+            <span style="background:{cur_color}; color:#fff; font-weight:700; padding:1px 7px; border-radius:10px; font-size:11px;">{cur_aqi} · {cur_cat}</span>
+        </div>
+        """
+
+    scale_html = f"""
+    <div id="pf-aqi-floating-card" style="
+        position: fixed;
+        bottom: 24px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 1000;
+        background: #ffffff;
+        border-radius: 12px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.22), 0 0 0 1px rgba(0,0,0,0.06);
+        padding: 12px 16px;
+        width: 350px;
+        max-width: calc(100% - 32px);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        box-sizing: border-box;
+    ">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:2px;">
+            <span style="font-size:13.5px; font-weight:700; color:#1E293B; display:flex; align-items:center; gap:6px;">
+                🍃 Air quality in this area
+            </span>
+            <span style="display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; background:#10B981; color:#fff; border-radius:50%; font-size:11px;" title="Air Quality Active">
+                ✓
+            </span>
+        </div>
+        <div style="font-size:11px; color:#64748B; margin-bottom:7px;">
+            Tap on map to see reading for any area
+        </div>
+        <!-- Gradient Spectrum Scale Bar -->
+        <div style="
+            height: 9px;
+            border-radius: 5px;
+            background: linear-gradient(to right,
+                #00E400 0%,
+                #FFFF00 15%,
+                #FF7E00 35%,
+                #FF0000 55%,
+                #8F3F97 75%,
+                #7E0023 100%
+            );
+            margin-bottom: 3px;
+            border: 1px solid rgba(0,0,0,0.08);
+        "></div>
+        <!-- Numeric Scale Reading Labels -->
+        <div style="display:flex; justify-content:space-between; font-size:10px; color:#64748B; font-weight:600; padding:0 2px;">
+            <span>0</span>
+            <span>50</span>
+            <span>100</span>
+            <span>200</span>
+            <span>300</span>
+            <span>400</span>
+            <span>500</span>
+        </div>
+        {reading_sub_html}
+        <!-- Attribution / Link -->
+        <div style="margin-top:6px; font-size:10px; color:#94A3B8; display:flex; justify-content:space-between; align-items:center;">
+            <span>World Air Quality Index (WAQI)</span>
+            <a href="https://waqi.info/" target="_blank" style="color:#2563EB; text-decoration:none; font-weight:600;">Learn more</a>
+        </div>
+    </div>
+    """
+    m.get_root().html.add_child(folium.Element(scale_html))
+
+
+
 def _format_travel_time(distance_m: float, speed_kmh: float) -> str:
     """Calculate and format travel time based on distance and average speed."""
     if distance_m <= 0:
@@ -446,6 +610,9 @@ def build_empty_map(
     graph: Optional[Graph] = None,
     traffic_mode: Optional[str] = None,
     departure_time: Any = None,
+    show_aqi: bool = False,
+    aqi_data: Optional[Dict[str, Any]] = None,
+    waqi_token: str = "demo",
 ) -> Any:
     """
     Construct an initial interactive Folium map centered on Ranchi with optional markers.
@@ -487,19 +654,34 @@ def build_empty_map(
 
     if start_point:
         lat, lon, label = start_point
+        start_popup_html = (
+            f"<div style='font-family: Arial, sans-serif; min-width: 150px;'>"
+            f"<h4 style='margin: 0 0 4px 0; color: #16A34A;'>🚩 Point A (Start)</h4>"
+            f"<b>{label}</b><br>"
+            f"<span style='font-size: 11px; color: #666;'>Lat: {lat:.5f}, Lon: {lon:.5f}</span><br>"
+            f"<span style='font-size: 11.5px; color: #15803D; font-weight: 600;'>👉 Click Point B on map to route</span>"
+            f"</div>"
+        )
         folium.Marker(
             location=[lat, lon],
-            popup=f"<b>Start:</b> {label}",
-            tooltip=f"Start: {label}",
+            popup=folium.Popup(start_popup_html, max_width=250),
+            tooltip=f"🚩 Point A: {label}",
             icon=folium.Icon(color="green", icon="play", prefix="fa"),
         ).add_to(m)
 
     if dest_point:
         lat, lon, label = dest_point
+        dest_popup_html = (
+            f"<div style='font-family: Arial, sans-serif; min-width: 150px;'>"
+            f"<h4 style='margin: 0 0 4px 0; color: #DC2626;'>🏁 Point B (Destination)</h4>"
+            f"<b>{label}</b><br>"
+            f"<span style='font-size: 11px; color: #666;'>Lat: {lat:.5f}, Lon: {lon:.5f}</span>"
+            f"</div>"
+        )
         folium.Marker(
             location=[lat, lon],
-            popup=f"<b>Destination:</b> {label}",
-            tooltip=f"Destination: {label}",
+            popup=folium.Popup(dest_popup_html, max_width=250),
+            tooltip=f"🏁 Destination: {label}",
             icon=folium.Icon(color="red", icon="flag", prefix="fa"),
         ).add_to(m)
 
@@ -537,6 +719,9 @@ def build_empty_map(
     if include_search_bar:
         _add_search_widget(m)
 
+    if show_aqi:
+        _add_aqi_layer(m, aqi_data=aqi_data, waqi_token=waqi_token)
+
     return m
 
 
@@ -557,6 +742,9 @@ def build_folium_map(
     show_hud: bool = True,
     traffic_mode: Optional[str] = None,
     departure_time: Any = None,
+    show_aqi: bool = False,
+    aqi_data: Optional[Dict[str, Any]] = None,
+    waqi_token: str = "demo",
 ) -> Any:
     """
     Build and return a Folium Map instance for route visualization.
@@ -574,6 +762,9 @@ def build_folium_map(
             graph=graph,
             traffic_mode=traffic_mode,
             departure_time=departure_time,
+            show_aqi=show_aqi,
+            aqi_data=aqi_data,
+            waqi_token=waqi_token,
         )
 
     mid_lat = (start_coord[0] + dest_coord[0]) / 2.0
@@ -794,7 +985,7 @@ def build_folium_map(
     # Origin Marker (Green)
     start_html = f"""
     <div style="font-family: Arial, sans-serif; min-width: 140px;">
-        <h4 style="margin: 0 0 5px 0; color: #059669;">🚩 Start</h4>
+        <h4 style="margin: 0 0 5px 0; color: #059669;">🚩 Point A (Start)</h4>
         <b>{start_label}</b><br>
         <span style="font-size: 11px; color: #666;">Lat: {start_coord[0]:.5f}, Lon: {start_coord[1]:.5f}</span>
     </div>
@@ -850,6 +1041,9 @@ def build_folium_map(
     if include_search_bar:
         _add_search_widget(m)
 
+    if show_aqi:
+        _add_aqi_layer(m, aqi_data=aqi_data, waqi_token=waqi_token)
+
     m.fit_bounds(all_bounds_points, padding=[30, 30])
     return m
 
@@ -869,6 +1063,9 @@ def generate_interactive_map(
     current_location: Optional[Tuple[float, float, str]] = None,
     show_algorithm_stats: bool = False,
     include_search_bar: bool = True,
+    show_aqi: bool = False,
+    aqi_data: Optional[Dict[str, Any]] = None,
+    waqi_token: str = "demo",
 ) -> str:
     """
     Generate and save an interactive Folium HTML map visualizing calculated route(s).
@@ -887,6 +1084,9 @@ def generate_interactive_map(
         current_location=current_location,
         show_algorithm_stats=show_algorithm_stats,
         include_search_bar=include_search_bar,
+        show_aqi=show_aqi,
+        aqi_data=aqi_data,
+        waqi_token=waqi_token,
     )
     abs_output = os.path.abspath(output_path)
     os.makedirs(os.path.dirname(abs_output), exist_ok=True)

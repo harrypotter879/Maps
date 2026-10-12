@@ -6,3 +6,4 @@ __pycache__/
 venv/
 cache/
 *.html
+!browser_geolocation/index.html

@@ -33,6 +33,18 @@ Both pathfinding algorithms are built from first principles using Python's stand
 
 ## ✨ Features
 
+- **🎯 The "Interactive Click-to-Route" Dashboard (`app.py`)**:
+  - **The Show Factor**: Completely bypass typing. Touch or click any two random spots on a giant live map displayed on your screen, and the algorithm instantly calculates and draws the path with exact road geometry!
+  - **Zero-Typing 2-Click Routing**:
+    - **Click 1**: Drops **Point A (Start 🚩)** with real-time reverse-geocoding and step-by-step guidance.
+    - **Click 2**: Drops **Point B (Destination 🏁)** and **instantly computes and draws the path**!
+    - **Dynamic Re-Routing**: Touch any 3rd spot on the map to dynamically update Destination and morph the route live.
+  - **Giant Live Map Canvas**: Expansive, full-width map (up to 820px Ultra Giant view) with precision crosshair cursor and auto-framing.
+  - **One-Touch Showcase Actions**:
+    - `[🔄 New 2-Click Route]`: One-touch reset to clear pins and pick two new spots.
+    - `[↔️ Reverse Path]`: Swaps Point A and Point B and instantly draws the reverse path.
+    - `[🎲 Surprise Me (Random)]`: Demonstrates instant algorithmic routing with a single touch.
+    - `[📐 Giant Map View Toggle]`: Seamlessly toggle between Standard (580px), Giant (700px), and Ultra (820px).
 - **Interactive Streamlit Web Interface (`app.py`)**:
   - **🌍 Worldwide Real-World Navigation & Search**: Search any place, address, city, or landmark worldwide across 200+ countries and find real-time road driving routes with turn-by-turn guidance, distance, ETA, and alternative paths using OpenStreetMap OSRM.
   - **My Current Location Feature (`🔵`)**: Visualizes user's current location with a glowing blue dot marker (`🔵 My Current Location`), built-in Leaflet GPS geolocation (`LocateControl`), and single-click routing (`[ 🚩 Route From My Location ]` / `[ 🏁 Route To My Location ]`).
@@ -50,6 +62,12 @@ Both pathfinding algorithms are built from first principles using Python's stand
   - **Interactive Map Selection**: Click anywhere on the map to set origin, destination, or current location pins with automatic reverse geocoding.
   - **⇄ Swap Button**: Instant one-click interchange of start and destination points.
   - **Traffic-Aware Route Estimation**: In Ranchi Mode, choose Shortest Distance or Traffic-Aware routing, set a departure time or quick preset, and compare the recommended route's modeled time with the shortest-distance route.
+  - **🍃 Real-Time Air Quality Index (WAQI) Feature**:
+    - **One-Click Activation**: Easily activate or close the real-time Air Quality map anytime using the prominent `[🍃 Air Quality]` button in the top action bar, bottom controls, or sidebar toggle.
+    - **World Air Quality Index (WAQI) Tile Layer**: Directly overlays global real-time WAQI air quality tiles onto the interactive Folium/Leaflet map.
+    - **Google Maps-Style Floating Scale Card**: Bottom-center floating card displaying the national & world AQI color spectrum bar (`0 - 50 - 100 - 200 - 300 - 400 - 500`) with Good (Green), Moderate (Yellow), Sensitive (Orange), Unhealthy (Red), Very Unhealthy (Purple), and Hazardous (Maroon) categories.
+    - **Interactive Tap-to-Inspect**: Tap or click anywhere on the map in AQI mode to instantly inspect that specific area's AQI score, health advisory, and individual pollutant readings ($\text{PM}_{2.5}$, $\text{PM}_{10}$, $\text{O}_3$, $\text{NO}_2$, $\text{SO}_2$, $\text{CO}$).
+    - **Flexible Authentication**: Operates seamlessly out-of-the-box via WAQI public demo, with support for personal tokens via the sidebar settings.
 - **Two Pure-Python Algorithms (From Scratch)**:
   - **Dijkstra's Algorithm**: Exhaustive uniform-cost search tracking cumulative distance $g(n)$.
   - **A\* Search Algorithm**: Informed best-first search tracking $f(n) = g(n) + h(n)$ using the great-circle Haversine distance heuristic.

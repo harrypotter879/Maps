@@ -1900,5 +1900,225 @@ class TestWikipediaPlaceInfo(unittest.TestCase):
         self.assertTrue(data["found"])
 
 
+class TestClickToRouteDashboard(unittest.TestCase):
+    """Unit tests for the Interactive Click-to-Route Dashboard feature."""
+
+    def setUp(self) -> None:
+        import streamlit as st
+        from app import init_session_state
+        init_session_state()
+
+    def test_click_to_route_session_state_init(self) -> None:
+        """Verify click-to-route session state variables initialize correctly."""
+        import streamlit as st
+        self.assertTrue(st.session_state.get("click_to_route_mode"))
+        self.assertEqual(st.session_state.get("click_route_step"), "start")
+        self.assertEqual(st.session_state.get("map_height_setting"), 700)
+        self.assertEqual(st.session_state.get("click_behavior"), "update_dest")
+
+    def test_reset_click_to_route(self) -> None:
+        """Verify reset_click_to_route clears all points and sets step to start."""
+        import streamlit as st
+        from app import reset_click_to_route
+
+        st.session_state.start_coords = (23.36, 85.32)
+        st.session_state.start_name = "Start Point"
+        st.session_state.dest_coords = (23.35, 85.33)
+        st.session_state.dest_name = "Dest Point"
+        st.session_state.click_route_step = "active"
+
+        reset_click_to_route()
+        self.assertIsNone(st.session_state.start_coords)
+        self.assertIsNone(st.session_state.start_name)
+        self.assertIsNone(st.session_state.dest_coords)
+        self.assertIsNone(st.session_state.dest_name)
+        self.assertIsNone(st.session_state.route_result)
+        self.assertEqual(st.session_state.click_route_step, "start")
+
+    def test_swap_endpoints(self) -> None:
+        """Verify swap_endpoints swaps start and destination and recomputes route."""
+        import streamlit as st
+        from app import swap_endpoints
+
+        pt1 = (23.3699, 85.3253)
+        pt2 = (23.3512, 85.3347)
+        st.session_state.start_coords = pt1
+        st.session_state.start_name = "Albert Ekka Chowk"
+        st.session_state.start_address = "Albert Ekka Chowk, Ranchi"
+        st.session_state.dest_coords = pt2
+        st.session_state.dest_name = "Ranchi Railway Station"
+        st.session_state.dest_address = "Ranchi Railway Station, Ranchi"
+
+        swap_endpoints(is_realworld=True)
+        self.assertEqual(st.session_state.start_coords, pt2)
+        self.assertEqual(st.session_state.start_name, "Ranchi Railway Station")
+        self.assertEqual(st.session_state.dest_coords, pt1)
+        self.assertEqual(st.session_state.dest_name, "Albert Ekka Chowk")
+        self.assertIsNotNone(st.session_state.route_result)
+        self.assertTrue(st.session_state.route_result.found)
+
+    def test_generate_random_demo_route_realworld(self) -> None:
+        """Verify generate_random_demo_route picks 2 distinct landmarks and computes path."""
+        import streamlit as st
+        from app import generate_random_demo_route
+
+        generate_random_demo_route(is_realworld=True)
+        self.assertIsNotNone(st.session_state.start_coords)
+        self.assertIsNotNone(st.session_state.dest_coords)
+        self.assertNotEqual(st.session_state.start_coords, st.session_state.dest_coords)
+        self.assertIsNotNone(st.session_state.route_result)
+        self.assertTrue(st.session_state.route_result.found)
+        self.assertEqual(st.session_state.click_route_step, "active")
+
+    def test_generate_random_demo_route_fictional(self) -> None:
+        """Verify generate_random_demo_route works on fictional map."""
+        import streamlit as st
+        from app import generate_random_demo_route
+
+        generate_random_demo_route(is_realworld=False)
+        self.assertIsNotNone(st.session_state.start_name)
+        self.assertIsNotNone(st.session_state.dest_name)
+        self.assertNotEqual(st.session_state.start_name, st.session_state.dest_name)
+        self.assertIsNotNone(st.session_state.route_result)
+        self.assertTrue(st.session_state.route_result.found)
+
+    def test_click_branding_markers_in_map_view(self) -> None:
+        """Verify that Point A (Start) and Point B (Destination) appear in HTML output."""
+        from map_view import build_empty_map
+        m = build_empty_map(
+            start_point=(23.3699, 85.3253, "Albert Ekka Chowk"),
+            dest_point=(23.3512, 85.3347, "Ranchi Railway Station"),
+        )
+        html_str = m._repr_html_()
+        self.assertIn("Point A (Start)", html_str)
+        self.assertIn("Point B (Destination)", html_str)
+
+
+class TestAirQualityIndex(unittest.TestCase):
+    """Test suite for WAQI (World Air Quality Index) service and map visualization."""
+
+    def test_aqi_category_and_color_scales(self) -> None:
+        from aqi_service import get_aqi_category
+        good = get_aqi_category(35)
+        self.assertEqual(good["label"], "Good")
+        self.assertEqual(good["color"], "#16A34A")
+
+        mod = get_aqi_category(82)
+        self.assertEqual(mod["label"], "Moderate")
+        self.assertEqual(mod["color"], "#EAB308")
+
+        usg = get_aqi_category(125)
+        self.assertEqual(usg["label"], "Unhealthy for Sensitive Groups")
+        self.assertEqual(usg["color"], "#F97316")
+
+        unh = get_aqi_category(175)
+        self.assertEqual(unh["label"], "Unhealthy")
+        self.assertEqual(unh["color"], "#EF4444")
+
+        vunh = get_aqi_category(240)
+        self.assertEqual(vunh["label"], "Very Unhealthy")
+        self.assertEqual(vunh["color"], "#9333EA")
+
+        haz = get_aqi_category(420)
+        self.assertEqual(haz["label"], "Hazardous")
+        self.assertEqual(haz["color"], "#881337")
+
+    def test_get_waqi_api_token(self) -> None:
+        from aqi_service import get_waqi_api_token
+        self.assertEqual(get_waqi_api_token(None), "demo")
+        self.assertEqual(get_waqi_api_token("my_secret_token_123"), "my_secret_token_123")
+
+    def test_fetch_waqi_reading_structure(self) -> None:
+        from aqi_service import fetch_waqi_reading
+        reading = fetch_waqi_reading(23.3441, 85.3096, area_name="Ranchi Test Area")
+        self.assertIn("aqi", reading)
+        self.assertIsInstance(reading["aqi"], int)
+        self.assertIn("category", reading)
+        self.assertIn("color", reading)
+        self.assertIn("pollutants", reading)
+        self.assertIn("advisory", reading)
+        self.assertIn("station_name", reading)
+
+    def test_build_empty_map_aqi_layer(self) -> None:
+        from map_view import build_empty_map
+        sample_aqi = {
+            "aqi": 88,
+            "category": "Moderate",
+            "color": "#EAB308",
+            "station_name": "Ranchi Main Area",
+            "lat": 23.3441,
+            "lon": 85.3096,
+            "description": "Air quality is acceptable.",
+            "advisory": "Unusually sensitive people should take care.",
+            "pollutants": {"pm25": 28.5, "pm10": 55.0},
+            "dominant_pollutant": "PM2.5",
+            "source": "World Air Quality Index (WAQI)",
+        }
+        m = build_empty_map(
+            center=(23.3441, 85.3096),
+            show_aqi=True,
+            aqi_data=sample_aqi,
+            waqi_token="demo",
+        )
+        html = m._repr_html_()
+        self.assertIn("tiles.aqicn.org/tiles/usepa-aqi", html)
+        self.assertIn("Air quality in this area", html)
+        self.assertIn("World Air Quality Index (WAQI)", html)
+        self.assertIn("88", html)
+
+    def test_build_folium_map_aqi_layer(self) -> None:
+        from map_view import build_folium_map
+        from graph import Graph
+        from dijkstra import PathResult, RouteLeg
+
+        g = Graph()
+        g.add_node("A", lat=23.34, lon=85.30)
+        g.add_node("B", lat=23.35, lon=85.31)
+        g.add_edge("A", "B", 1000.0)
+        res = PathResult(
+            source="A",
+            destination="B",
+            path=["A", "B"],
+            legs=[RouteLeg(origin="A", destination="B", distance=1000.0, road_name="Main Road")],
+            total_distance=1000.0,
+            execution_time_sec=0.001,
+            visited_nodes_count=2,
+            algorithm="A*",
+            found=True,
+        )
+
+        sample_aqi = {
+            "aqi": 115,
+            "category": "Unhealthy for Sensitive Groups",
+            "color": "#F97316",
+            "station_name": "Test Station",
+            "lat": 23.34,
+            "lon": 85.30,
+            "pollutants": {"pm25": 41.2},
+        }
+
+        m = build_folium_map(
+            graph=g,
+            result=res,
+            start_coord=(23.34, 85.30),
+            dest_coord=(23.35, 85.31),
+            show_aqi=True,
+            aqi_data=sample_aqi,
+        )
+        html = m._repr_html_()
+        self.assertIn("tiles.aqicn.org/tiles/usepa-aqi", html)
+        self.assertIn("Air quality in this area", html)
+
+    def test_app_aqi_session_state(self) -> None:
+        import streamlit as st
+        from app import init_session_state
+
+        init_session_state()
+        self.assertIn("show_aqi_mode", st.session_state)
+        self.assertIn("aqi_inspect_coords", st.session_state)
+        self.assertIn("waqi_custom_token", st.session_state)
+
+
 if __name__ == "__main__":
     unittest.main()
+

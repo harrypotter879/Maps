@@ -21,11 +21,13 @@ import hashlib
 import json
 import math
 import os
+import random
 from datetime import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import folium
 import streamlit as st
+import streamlit.components.v1 as components
 from streamlit_folium import st_folium
 
 from graph import Graph, create_sample_road_network
@@ -42,12 +44,61 @@ from traffic import (
     analyse_route, apply_traffic_mode, normalize_departure_time, get_traffic_period,
 )
 from wiki_info import fetch_wiki_info_for_location
+from aqi_service import fetch_waqi_reading, get_aqi_category, AQI_CATEGORIES, get_waqi_api_token
 
 MY_LOCATION_LABEL = "🔵 My Current Location"
 MAX_BOOKMARKS = 20
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 BOOKMARKS_FILE = os.path.join(DATA_DIR, "bookmarks.json")
+_browser_geolocation = components.declare_component(
+    "pathfinder_browser_geolocation",
+    path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_geolocation"),
+)
+
+
+def _enable_aqi_mode() -> None:
+    """Start an AQI lookup using browser GPS when the AQI control is activated."""
+    st.session_state.show_aqi_mode = True
+    st.session_state.aqi_inspect_coords = None
+    st.session_state.aqi_location_pending = True
+    st.session_state.aqi_location_error = None
+    st.session_state.aqi_location_request_id = st.session_state.get("aqi_location_request_id", 0) + 1
+
+
+def _on_sidebar_aqi_toggle() -> None:
+    """Keep the sidebar switch and AQI location flow in sync."""
+    if st.session_state.get("sidebar_aqi_toggle"):
+        if not st.session_state.get("show_aqi_mode"):
+            _enable_aqi_mode()
+    else:
+        st.session_state.show_aqi_mode = False
+        st.session_state.aqi_location_pending = False
+
+
+def _sync_aqi_browser_location() -> None:
+    """Receive the browser's GPS result and make it the active AQI location."""
+    if not st.session_state.get("show_aqi_mode") or not st.session_state.get("aqi_location_pending"):
+        return
+
+    request_id = st.session_state.get("aqi_location_request_id", 0)
+    result = _browser_geolocation(key=f"aqi-browser-geolocation-{request_id}", default=None)
+    if not isinstance(result, dict):
+        return
+
+    lat, lon = result.get("latitude"), result.get("longitude")
+    if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
+        if -90 <= lat <= 90 and -180 <= lon <= 180:
+            location = (float(lat), float(lon), "My Current Location")
+            st.session_state.my_location = location
+            st.session_state.aqi_inspect_coords = location
+            st.session_state.aqi_location_pending = False
+            st.session_state.aqi_location_error = None
+            return
+
+    if result.get("error"):
+        st.session_state.aqi_location_pending = False
+        st.session_state.aqi_location_error = result["error"]
 
 
 def load_bookmarks(filepath: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -181,6 +232,12 @@ def estimate_travel_time(distance_m: float, speed_kmh: float = 30.0) -> str:
         return f"{h} hr{'s' if h != 1 else ''}" if m == 0 else f"{h} hr {m} min"
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def get_cached_aqi_reading(lat: float, lon: float, token: Optional[str] = None, name: Optional[str] = None) -> Dict[str, Any]:
+    """Fetch and cache real-time AQI observation metrics from WAQI API."""
+    return fetch_waqi_reading(lat, lon, token=token, area_name=name)
+
+
 def init_session_state() -> None:
     """Initialize Streamlit session state variables."""
     if "my_location" not in st.session_state:
@@ -254,6 +311,18 @@ def init_session_state() -> None:
     if "last_clicked_coords" not in st.session_state:
         st.session_state.last_clicked_coords = None
 
+    # Interactive Click-to-Route state (Zero-typing direct map interaction)
+    if "click_to_route_mode" not in st.session_state:
+        st.session_state.click_to_route_mode = True
+    if "last_handled_click" not in st.session_state:
+        st.session_state.last_handled_click = None
+    if "click_route_step" not in st.session_state:
+        st.session_state.click_route_step = "start"
+    if "map_height_setting" not in st.session_state:
+        st.session_state.map_height_setting = 700
+    if "click_behavior" not in st.session_state:
+        st.session_state.click_behavior = "update_dest"
+
     valid_modes = [
         "Real-World Map (Worldwide Search, Routing & Ranchi Traffic)",
         "Fictional Regional Map (Stage 1)",
@@ -294,6 +363,20 @@ def init_session_state() -> None:
     if "traffic_notice" not in st.session_state:
         st.session_state.traffic_notice = None
 
+    # Air Quality (WAQI) Mode: off by default; directly activated via button
+    if "show_aqi_mode" not in st.session_state:
+        st.session_state.show_aqi_mode = False
+    if "sidebar_aqi_toggle" in st.session_state:
+        st.session_state.sidebar_aqi_toggle = st.session_state.show_aqi_mode
+    if "aqi_inspect_coords" not in st.session_state:
+        st.session_state.aqi_inspect_coords = None
+    if "aqi_location_pending" not in st.session_state:
+        st.session_state.aqi_location_pending = False
+    if "aqi_location_error" not in st.session_state:
+        st.session_state.aqi_location_error = None
+    if "waqi_custom_token" not in st.session_state:
+        st.session_state.waqi_custom_token = ""
+
 
 def get_traffic_mode() -> Optional[str]:
     """Return the active route objective for the Ranchi network."""
@@ -326,7 +409,6 @@ def compute_routes(is_realworld: bool) -> None:
         st.session_state.baseline_result = None
         st.session_state.is_worldwide_active = False
         st.session_state.worldwide_graph = None
-        st.session_state.show_info_panel = True
         st.session_state.info_panel_target = "destination"
         return
 
@@ -366,26 +448,32 @@ def compute_routes(is_realworld: bool) -> None:
         st.session_state.worldwide_graph = None
     else:
         # Route via Worldwide Navigation Engine (OSRM)
-        w_graph, w_results = fetch_worldwide_route(
-            (start_lat, start_lon),
-            (dest_lat, dest_lon),
-            start_label=st.session_state.start_name,
-            dest_label=st.session_state.dest_name,
-        )
-        st.session_state.worldwide_graph = w_graph
-        st.session_state.is_worldwide_active = True
-        st.session_state.baseline_result = None
+        try:
+            w_graph, w_results = fetch_worldwide_route(
+                (start_lat, start_lon),
+                (dest_lat, dest_lon),
+                start_label=st.session_state.start_name,
+                dest_label=st.session_state.dest_name,
+            )
+            st.session_state.worldwide_graph = w_graph
+            st.session_state.is_worldwide_active = True
+            st.session_state.baseline_result = None
 
-        if w_results and w_results[0].found:
-            st.session_state.alternative_results = w_results
-            st.session_state.route_result = w_results[0]
-            st.session_state.active_route_index = 0
-        else:
+            if w_results and w_results[0].found:
+                st.session_state.alternative_results = w_results
+                st.session_state.route_result = w_results[0]
+                st.session_state.active_route_index = 0
+            else:
+                st.session_state.alternative_results = []
+                st.session_state.route_result = w_results[0] if w_results else None
+        except Exception as e:
+            st.session_state.worldwide_graph = None
+            st.session_state.is_worldwide_active = False
             st.session_state.alternative_results = []
-            st.session_state.route_result = w_results[0] if w_results else None
+            st.session_state.route_result = None
+            st.warning(f"Worldwide navigation notice: {e}")
 
-    # When a route is computed, automatically open the right panel showing Destination info
-    st.session_state.show_info_panel = True
+    # Set destination as info panel target without forcing panel to squeeze the giant map
     st.session_state.info_panel_target = "destination"
 
 
@@ -464,6 +552,140 @@ def _apply_manual_departure_time() -> None:
     }
     st.session_state.time_preset = labels_by_time.get(selected, "Custom time")
     on_routing_settings_change()
+
+
+def render_aqi_dashboard_card() -> Optional[Dict[str, Any]]:
+    """
+    Render a Google Maps style real-time Air Quality dashboard banner
+    featuring WAQI reading, severity color badge, health recommendation,
+    pollutant readings breakdown, and an instant close button.
+    """
+    inspect_tuple = st.session_state.get("aqi_inspect_coords")
+    if not inspect_tuple:
+        if st.session_state.get("searched_location"):
+            s_lat, s_lon, s_name = st.session_state.searched_location
+            inspect_tuple = (s_lat, s_lon, s_name)
+        elif st.session_state.get("start_coords"):
+            inspect_tuple = (st.session_state.start_coords[0], st.session_state.start_coords[1], st.session_state.start_name or "Origin")
+        else:
+            inspect_tuple = st.session_state.my_location
+        st.session_state.aqi_inspect_coords = inspect_tuple
+
+    lat, lon, label = inspect_tuple
+    token = st.session_state.get("waqi_custom_token", "")
+    aqi_data = get_cached_aqi_reading(lat, lon, token=token, name=label)
+
+    if not aqi_data.get("available", True):
+        st.warning(
+            f"Live air quality data isn't available for {label} right now. "
+            "Please try again in a moment."
+        )
+        return aqi_data
+
+    aqi_val = aqi_data.get("aqi", 0)
+    category = aqi_data.get("category", "Moderate")
+    color = aqi_data.get("color", "#EAB308")
+    bg_color = aqi_data.get("bg_color", "#FEF9C3")
+    border_color = aqi_data.get("border_color", "#FDE047")
+    text_color = aqi_data.get("text_color", "#713F12")
+    icon = aqi_data.get("icon", "🟡")
+    advisory = aqi_data.get("advisory", "")
+    station_name = aqi_data.get("station_name", label)
+    dom_pol = aqi_data.get("dominant_pollutant", "PM2.5")
+    pollutants = aqi_data.get("pollutants") or {}
+    source_name = aqi_data.get("source", "World Air Quality Index (WAQI)")
+    rep_time = aqi_data.get("reporting_time", "Live")
+
+    st.markdown(
+        f"""
+        <div style="
+            background: #FFFFFF;
+            border: 1.5px solid {border_color};
+            border-left: 6px solid {color};
+            border-radius: 12px;
+            padding: 14px 18px;
+            margin-bottom: 12px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.06);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        ">
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:10px;">
+                <div style="display:flex; align-items:center; gap:14px;">
+                    <div style="
+                        background: {color};
+                        color: #FFFFFF;
+                        font-weight: 800;
+                        font-size: 24px;
+                        min-width: 62px;
+                        height: 62px;
+                        border-radius: 14px;
+                        display: flex;
+                        flex-direction: column;
+                        align-items: center;
+                        justify-content: center;
+                        box-shadow: 0 4px 10px {color}55;
+                        line-height: 1.1;
+                    ">
+                        <span>{aqi_val}</span>
+                        <span style="font-size: 10px; font-weight: 600; opacity: 0.9;">AQI</span>
+                    </div>
+                    <div>
+                        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <span style="font-size:16px; font-weight:700; color:#0F172A;">🍃 Air Quality · {station_name}</span>
+                            <span style="background:{bg_color}; color:{text_color}; border:1px solid {border_color}; padding:2px 8px; border-radius:12px; font-size:12px; font-weight:700;">
+                                {icon} {category}
+                            </span>
+                        </div>
+                        <div style="font-size:12.5px; color:#475569; margin-top:3px;">
+                            <b>Dominant:</b> {dom_pol} &nbsp;·&nbsp; <span style="color:#64748B;">GPS: `{lat:.4f}, {lon:.4f}`</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div style="margin-top:10px; font-size:12.5px; color:#334155; line-height:1.45; background:{bg_color}66; padding:8px 12px; border-radius:8px;">
+                <b>Health Advisory:</b> {advisory}
+            </div>
+            <!-- Pollutants Grid -->
+            <div style="margin-top:10px; display:grid; grid-template-columns: repeat(auto-fit, minmax(105px, 1fr)); gap:6px;">
+                <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:8px; padding:6px 8px; text-align:center;">
+                    <div style="font-size:10.5px; color:#64748B; font-weight:600;">PM2.5</div>
+                    <div style="font-size:13.5px; color:#0F172A; font-weight:700;">{f"{pollutants.get('pm25'):.1f}" if isinstance(pollutants.get('pm25'), (int, float)) else '--'} <span style="font-size:10px; font-weight:normal; color:#64748B;">µg/m³</span></div>
+                </div>
+                <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:8px; padding:6px 8px; text-align:center;">
+                    <div style="font-size:10.5px; color:#64748B; font-weight:600;">PM10</div>
+                    <div style="font-size:13.5px; color:#0F172A; font-weight:700;">{f"{pollutants.get('pm10'):.1f}" if isinstance(pollutants.get('pm10'), (int, float)) else '--'} <span style="font-size:10px; font-weight:normal; color:#64748B;">µg/m³</span></div>
+                </div>
+                <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:8px; padding:6px 8px; text-align:center;">
+                    <div style="font-size:10.5px; color:#64748B; font-weight:600;">Ozone (O₃)</div>
+                    <div style="font-size:13.5px; color:#0F172A; font-weight:700;">{f"{pollutants.get('o3'):.1f}" if isinstance(pollutants.get('o3'), (int, float)) else '--'} <span style="font-size:10px; font-weight:normal; color:#64748B;">ppb</span></div>
+                </div>
+                <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:8px; padding:6px 8px; text-align:center;">
+                    <div style="font-size:10.5px; color:#64748B; font-weight:600;">Nitrogen (NO₂)</div>
+                    <div style="font-size:13.5px; color:#0F172A; font-weight:700;">{f"{pollutants.get('no2'):.1f}" if isinstance(pollutants.get('no2'), (int, float)) else '--'} <span style="font-size:10px; font-weight:normal; color:#64748B;">ppb</span></div>
+                </div>
+                <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:8px; padding:6px 8px; text-align:center;">
+                    <div style="font-size:10.5px; color:#64748B; font-weight:600;">Sulfur (SO₂)</div>
+                    <div style="font-size:13.5px; color:#0F172A; font-weight:700;">{f"{pollutants.get('so2'):.1f}" if isinstance(pollutants.get('so2'), (int, float)) else '--'} <span style="font-size:10px; font-weight:normal; color:#64748B;">ppb</span></div>
+                </div>
+                <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:8px; padding:6px 8px; text-align:center;">
+                    <div style="font-size:10.5px; color:#64748B; font-weight:600;">Carbon (CO)</div>
+                    <div style="font-size:13.5px; color:#0F172A; font-weight:700;">{f"{pollutants.get('co'):.1f}" if isinstance(pollutants.get('co'), (int, float)) else '--'} <span style="font-size:10px; font-weight:normal; color:#64748B;">ppm</span></div>
+                </div>
+            </div>
+            <div style="margin-top:9px; display:flex; justify-content:space-between; align-items:center; font-size:11px; color:#94A3B8; flex-wrap:wrap; gap:4px;">
+                <span>💡 <b>Tip:</b> Click anywhere on the map to inspect real-time AQI for that spot.</span>
+                <span>Source: <b>{source_name}</b> ({rep_time})</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    col_close_aqi, col_inspect_info = st.columns([1.6, 8.4])
+    with col_close_aqi:
+        if st.button("✕ Close Air Quality", key="btn_close_aqi_banner", use_container_width=True):
+            st.session_state.show_aqi_mode = False
+            st.rerun()
+
+    return aqi_data
 
 
 def render_traffic_controls(is_realworld: bool) -> None:
@@ -612,8 +834,180 @@ def clear_global_search_pin() -> None:
         st.session_state.info_panel_target = "destination"
 
 
+def reset_click_to_route() -> None:
+    """Clear endpoints and reset interactive click-to-route state."""
+    st.session_state.start_coords = None
+    st.session_state.start_name = None
+    st.session_state.start_address = None
+    st.session_state.dest_coords = None
+    st.session_state.dest_name = None
+    st.session_state.dest_address = None
+    st.session_state.route_result = None
+    st.session_state.alternative_results = None
+    st.session_state.click_route_step = "start"
+    st.session_state.last_handled_click = None
+    st.toast("Ready! Touch or click any spot on the map to set Start (Point A).", icon="📍")
+
+
+def swap_endpoints(is_realworld: bool) -> None:
+    """Swap Start and Destination and instantly recalculate route in reverse."""
+    if st.session_state.get("start_coords") and st.session_state.get("dest_coords"):
+        st.session_state.start_coords, st.session_state.dest_coords = (
+            st.session_state.dest_coords,
+            st.session_state.start_coords,
+        )
+        st.session_state.start_name, st.session_state.dest_name = (
+            st.session_state.dest_name,
+            st.session_state.start_name,
+        )
+        st.session_state.start_address, st.session_state.dest_address = (
+            st.session_state.dest_address,
+            st.session_state.start_address,
+        )
+        try:
+            compute_routes(is_realworld)
+            st.toast(f"↔️ Swapped: {st.session_state.start_name} ➔ {st.session_state.dest_name}!", icon="🔄")
+        except Exception:
+            st.session_state.route_result = None
+
+
+def generate_random_demo_route(is_realworld: bool) -> None:
+    """Generate a random demonstration route to showcase the instant click-to-route algorithm."""
+    if not is_realworld:
+        graph = load_fictional_network()
+        nodes = list(graph.get_nodes())
+        if len(nodes) >= 2:
+            s, d = random.sample(nodes, 2)
+            st.session_state.start_name = s
+            st.session_state.dest_name = d
+            c_s = graph.get_node_coords(s)
+            c_d = graph.get_node_coords(d)
+            st.session_state.start_coords = c_s
+            st.session_state.dest_coords = c_d
+            st.session_state.click_route_step = "active"
+            compute_routes(is_realworld)
+            st.toast(f"🎲 Random Route: {s} ➔ {d}!", icon="✨")
+            return
+
+    # In real-world mode: pick 2 distinct landmarks from Ranchi
+    keys = list(RANCHI_LANDMARKS.keys())
+    if len(keys) >= 2:
+        k1, k2 = random.sample(keys, 2)
+        st.session_state.start_name = k1
+        st.session_state.start_coords = RANCHI_LANDMARKS[k1]
+        st.session_state.start_address = f"{k1}, Ranchi"
+        st.session_state.dest_name = k2
+        st.session_state.dest_coords = RANCHI_LANDMARKS[k2]
+        st.session_state.dest_address = f"{k2}, Ranchi"
+        st.session_state.searched_location = None
+        st.session_state.click_route_step = "active"
+        compute_routes(is_realworld)
+        st.toast(f"🎲 Demo Route: {k1} ➔ {k2}!", icon="✨")
+
+
+def render_click_to_route_dashboard_bar(is_realworld: bool) -> None:
+    """Render the Interactive Click-to-Route Dashboard header, live status, and quick zero-typing actions."""
+    has_start = bool(st.session_state.get("start_coords"))
+    has_dest = bool(st.session_state.get("dest_coords"))
+    has_route = bool(st.session_state.get("route_result") and st.session_state.route_result.found)
+
+    start_label = st.session_state.get("start_name") or "Waiting for click..."
+    dest_label = st.session_state.get("dest_name") or "Waiting for click..."
+
+    if not has_start:
+        status_msg = "👉 <b>Step 1:</b> Touch or click <b>any spot</b> on the giant live map below to set <b>Point A (Start)</b>. Zero typing required!"
+        status_icon = "📍"
+        status_bg = "#EFF6FF"
+        status_border = "#93C5FD"
+        status_text = "#1E40AF"
+    elif has_start and not has_dest:
+        status_msg = f"🎯 <b>Point A Set:</b> <b>{start_label}</b>! Now touch or click <b>any spot</b> for <b>Point B (Destination)</b> — path draws instantly!"
+        status_icon = "🏁"
+        status_bg = "#FEF3C7"
+        status_border = "#FCD34D"
+        status_text = "#92400E"
+    else:
+        res = st.session_state.route_result
+        if res and res.found:
+            dist_s = f"{res.total_distance/1000:.2f} km" if res.total_distance >= 1000 else f"{res.total_distance:.0f} m"
+            drive_eta = estimate_travel_time(res.total_distance, speed_kmh=30.0)
+            status_msg = f"⚡ <b>Path Drawn:</b> <b>{start_label}</b> ➔ <b>{dest_label}</b> &nbsp;|&nbsp; 📏 <b>{dist_s}</b> &nbsp;|&nbsp; 🚗 ~{drive_eta} &nbsp;|&nbsp; 🛣️ {len(res.legs)} legs"
+        else:
+            status_msg = f"🧭 Endpoints set: <b>{start_label}</b> ➔ <b>{dest_label}</b>"
+        status_icon = "🚀"
+        status_bg = "#ECFDF5"
+        status_border = "#6EE7B7"
+        status_text = "#065F46"
+
+    badge_a = "done" if has_start else "active"
+    badge_b = "done" if has_dest else ("active" if has_start else "pending")
+
+    st.markdown(
+        f"""
+        <div style="background:{status_bg}; border:1.5px solid {status_border}; border-radius:12px; padding:12px 18px; margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+            <div style="display:flex; align-items:center; gap:10px;">
+                <span style="font-size:22px;">{status_icon}</span>
+                <span style="color:{status_text}; font-size:14.5px;">{status_msg}</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px;">
+                <span class="click-step-badge {badge_a}">
+                    {'✓' if has_start else '1'} 📍 Point A: {start_label[:20] + '…' if len(start_label) > 20 else start_label}
+                </span>
+                <span style="color:#94A3B8; font-weight:700;">➔</span>
+                <span class="click-step-badge {badge_b}">
+                    {'✓' if has_dest else '2'} 🏁 Point B: {dest_label[:20] + '…' if len(dest_label) > 20 else dest_label}
+                </span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Action bar directly above the giant map
+    col_a1, col_a2, col_a3, col_a4, col_a5 = st.columns([1.6, 1.4, 1.7, 1.5, 1.8])
+    with col_a1:
+        if st.button("🔄 New 2-Click Route", key="btn_reset_click_nav", use_container_width=True, help="Clear endpoints to touch 2 new spots"):
+            reset_click_to_route()
+            st.rerun()
+    with col_a2:
+        if st.button("↔️ Reverse Path", key="btn_swap_click_nav", use_container_width=True, disabled=not (has_start and has_dest), help="Swap Point A and Point B"):
+            swap_endpoints(is_realworld)
+            st.rerun()
+    with col_a3:
+        if st.button("🎲 Surprise Me (Random)", key="btn_random_demo_nav", use_container_width=True, help="Show off instant routing with 2 random spots"):
+            generate_random_demo_route(is_realworld)
+            st.rerun()
+    with col_a4:
+        curr_h = st.session_state.get("map_height_setting", 700)
+        h_text = "📐 Giant (700px)" if curr_h == 700 else ("🖥️ Ultra (820px)" if curr_h == 820 else "📏 Standard (580px)")
+        next_h = 820 if curr_h == 700 else (580 if curr_h == 820 else 700)
+        if st.button(f"{h_text}", key="btn_map_height_nav", use_container_width=True, help="Toggle giant live map height"):
+            st.session_state.map_height_setting = next_h
+            st.rerun()
+    with col_a5:
+        beh = st.session_state.get("click_behavior", "update_dest")
+        beh_text = "🎯 Move Dest on Click" if beh == "update_dest" else "📍 New Pair on Click"
+        next_beh = "new_route" if beh == "update_dest" else "update_dest"
+        if st.button(f"{beh_text}", key="btn_beh_toggle_nav", use_container_width=True, help="Control behavior when clicking map after route is drawn"):
+            st.session_state.click_behavior = next_beh
+            st.rerun()
+
+
 def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_height: int = 580) -> None:
     """Helper to render interactive Folium map with current points, blue dot marker, or clean state."""
+    active_aqi_data = None
+    if (
+        st.session_state.get("show_aqi_mode", False)
+        and not st.session_state.get("aqi_location_pending")
+        and not st.session_state.get("aqi_location_error")
+    ):
+        inspect_tuple = st.session_state.get("aqi_inspect_coords")
+        if inspect_tuple:
+            lat, lon, label = inspect_tuple
+            reading = get_cached_aqi_reading(lat, lon, token=st.session_state.get("waqi_custom_token", ""), name=label)
+            if reading.get("available", True):
+                active_aqi_data = reading
+
     has_endpoints = bool(
         (st.session_state.get("start_coords") and st.session_state.get("dest_coords"))
         if is_realworld
@@ -648,9 +1042,18 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
                 show_hud=False,  # Keep map canvas clean!
                 traffic_mode=traffic_mode,
                 departure_time=st.session_state.departure_time,
+                show_aqi=st.session_state.get("show_aqi_mode", False),
+                aqi_data=active_aqi_data,
+                waqi_token=st.session_state.get("waqi_custom_token", "") or "demo",
             )
         else:
-            folium_map = build_empty_map(center=(23.3191843, 85.2987681), zoom=15)
+            folium_map = build_empty_map(
+                center=(23.3191843, 85.2987681),
+                zoom=15,
+                show_aqi=st.session_state.get("show_aqi_mode", False),
+                aqi_data=active_aqi_data,
+                waqi_token=st.session_state.get("waqi_custom_token", "") or "demo",
+            )
     else:
         start_pt = (
             (st.session_state.start_coords[0], st.session_state.start_coords[1], st.session_state.start_name)
@@ -685,6 +1088,9 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
             graph=load_cached_osm_network() if (is_realworld and get_traffic_mode()) else None,
             traffic_mode=get_traffic_mode() if is_realworld else None,
             departure_time=st.session_state.departure_time,
+            show_aqi=st.session_state.get("show_aqi_mode", False),
+            aqi_data=active_aqi_data,
+            waqi_token=st.session_state.get("waqi_custom_token", "") or "demo",
         )
 
     # Add visual bookmark markers to map
@@ -703,16 +1109,29 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
             icon=folium.Icon(color="orange", icon="star", prefix="fa"),
         ).add_to(folium_map)
 
+    folium_map.get_root().html.add_child(
+        folium.Element("<style>.leaflet-container { cursor: crosshair !important; }</style>")
+    )
+
+    start_sig = f"{st.session_state.start_coords}" if st.session_state.get("start_coords") else "no_start"
+    dest_sig = f"{st.session_state.dest_coords}" if st.session_state.get("dest_coords") else "no_dest"
+    click_step_sig = st.session_state.get("click_route_step", "start")
     route_signature = "-".join(str(node) for node in primary_result.path) if primary_result and primary_result.found else "preview"
     bm_signature = "-".join(f"{b['name']}:{b['lat']:.4f},{b['lon']:.4f}" for b in st.session_state.get("bookmarks", []))
+    aqi_sig = f"aqi_on:{st.session_state.get('aqi_inspect_coords')}" if st.session_state.get("show_aqi_mode") else "aqi_off"
     map_signature = "|".join((
         "drawer" if st.session_state.show_route_menu else "full",
         "bm_panel" if st.session_state.get("show_bookmarks") else "no_bm",
         "info_panel" if st.session_state.get("show_info_panel") else "no_info",
+        aqi_sig,
         route_signature,
         get_traffic_mode() or "distance",
         st.session_state.departure_time.strftime("%H:%M"),
         bm_signature,
+        start_sig,
+        dest_sig,
+        click_step_sig,
+        str(map_height),
     ))
     map_data = st_folium(
         folium_map,
@@ -724,55 +1143,128 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
     )
 
     if map_data and map_data.get("last_clicked"):
-        click_lat = map_data["last_clicked"]["lat"]
-        click_lon = map_data["last_clicked"]["lng"]
-        st.session_state.last_clicked_coords = (click_lat, click_lon)
-        st.info(f"🖱️ **Map Click Detected:** `Latitude: {click_lat:.5f}, Longitude: {click_lon:.5f}`")
-        col_c1, col_c2, col_c3, col_c4 = st.columns([1.1, 1.1, 1.1, 1.1])
-        with col_c1:
-            if st.button("📍 Set as Start & Open Go", key="btn_click_start"):
-                st.session_state.start_name = reverse_geocode(click_lat, click_lon)
-                st.session_state.start_coords = (click_lat, click_lon)
-                st.session_state.searched_location = None
-                st.session_state.show_route_menu = True
-                st.session_state.show_info_panel = True
-                if st.session_state.dest_coords and st.session_state.dest_name:
-                    try:
-                        compute_routes(is_realworld)
-                    except Exception:
-                        st.session_state.route_result = None
-                else:
+        click_lat = float(map_data["last_clicked"]["lat"])
+        click_lon = float(map_data["last_clicked"]["lng"])
+        click_point = (round(click_lat, 6), round(click_lon, 6))
+
+        if click_point != st.session_state.get("last_handled_click"):
+            st.session_state.last_handled_click = click_point
+            st.session_state.last_clicked_coords = (click_lat, click_lon)
+
+            # If AQI mode is active, tapping the map inspects that specific location's AQI
+            if st.session_state.get("show_aqi_mode", False):
+                place_name = reverse_geocode(click_lat, click_lon) or f"Area ({click_lat:.4f}, {click_lon:.4f})"
+                st.session_state.aqi_inspect_coords = (click_lat, click_lon, place_name)
+                st.session_state.aqi_location_pending = False
+                st.session_state.aqi_location_error = None
+                st.toast(f"🍃 Checking AQI for {place_name}...", icon="🍃")
+                st.rerun()
+
+            if st.session_state.get("click_to_route_mode", True):
+                start_is_set = bool(st.session_state.get("start_coords"))
+                dest_is_set = bool(st.session_state.get("dest_coords"))
+                step = st.session_state.get("click_route_step", "start")
+
+                if not start_is_set or step == "start":
+                    # STEP 1: Point A (Start)
+                    place_name = reverse_geocode(click_lat, click_lon)
+                    st.session_state.start_name = place_name
+                    st.session_state.start_coords = (click_lat, click_lon)
+                    st.session_state.start_address = place_name
+                    st.session_state.dest_name = None
+                    st.session_state.dest_coords = None
+                    st.session_state.dest_address = None
                     st.session_state.route_result = None
-                    st.session_state.info_panel_target = "origin"
-                st.rerun()
-        with col_c2:
-            if st.button("🎯 Set as Dest & Open Go", key="btn_click_dest"):
-                st.session_state.dest_name = reverse_geocode(click_lat, click_lon)
-                st.session_state.dest_coords = (click_lat, click_lon)
-                st.session_state.searched_location = None
-                st.session_state.show_route_menu = True
-                st.session_state.show_info_panel = True
-                st.session_state.info_panel_target = "destination"
-                if st.session_state.start_coords and st.session_state.start_name:
-                    try:
-                        compute_routes(is_realworld)
-                    except Exception:
-                        st.session_state.route_result = None
+                    st.session_state.alternative_results = None
+                    st.session_state.searched_location = None
+                    st.session_state.click_route_step = "dest"
+                    st.toast(f"📍 Point A set to '{place_name}'! Now tap or click Point B on the map.", icon="🚩")
+                    st.rerun()
+
+                elif not dest_is_set or step == "dest":
+                    # STEP 2: Point B (Destination) + Instant Route Calculation
+                    from astar import haversine_distance
+                    if haversine_distance(st.session_state.start_coords, (click_lat, click_lon)) < 15.0:
+                        st.toast("⚠️ Point B is too close to Point A. Please click another spot on the map.", icon="📍")
+                    else:
+                        place_name = reverse_geocode(click_lat, click_lon)
+                        st.session_state.dest_name = place_name
+                        st.session_state.dest_coords = (click_lat, click_lon)
+                        st.session_state.dest_address = place_name
+                        st.session_state.searched_location = None
+                        st.session_state.click_route_step = "active"
+                        try:
+                            compute_routes(is_realworld)
+                            if st.session_state.route_result and st.session_state.route_result.found:
+                                d_m = st.session_state.route_result.total_distance
+                                d_str = f"{d_m/1000:.2f} km" if d_m >= 1000 else f"{d_m:.0f} m"
+                                st.toast(f"⚡ Path drawn instantly! Distance: {d_str}", icon="🚀")
+                        except Exception as e:
+                            st.session_state.route_result = None
+                            st.toast(f"Route calculation error: {e}", icon="❌")
+                        st.rerun()
+
                 else:
-                    st.session_state.route_result = None
-                st.rerun()
-        with col_c3:
-            if st.button("🔵 Set as My Location", key="btn_click_my_loc"):
-                loc_label = reverse_geocode(click_lat, click_lon)
-                st.session_state.my_location = (click_lat, click_lon, loc_label)
-                st.session_state.searched_location = st.session_state.my_location
-                st.session_state.show_info_panel = True
-                st.session_state.info_panel_target = "searched"
-                st.rerun()
-        with col_c4:
-            if st.button("🔖 Bookmark Location", key="btn_click_bookmark"):
-                st.session_state.show_bookmarks = True
-                st.rerun()
+                    # STEP 3: Route is already active
+                    beh = st.session_state.get("click_behavior", "update_dest")
+                    if beh == "update_dest":
+                        # Instant retargeting: Move destination to clicked spot and redraw path!
+                        place_name = reverse_geocode(click_lat, click_lon)
+                        st.session_state.dest_name = place_name
+                        st.session_state.dest_coords = (click_lat, click_lon)
+                        st.session_state.dest_address = place_name
+                        st.session_state.searched_location = None
+                        try:
+                            compute_routes(is_realworld)
+                            if st.session_state.route_result and st.session_state.route_result.found:
+                                d_m = st.session_state.route_result.total_distance
+                                d_str = f"{d_m/1000:.2f} km" if d_m >= 1000 else f"{d_m:.0f} m"
+                                st.toast(f"🎯 Re-routed destination to '{place_name}' ({d_str})!", icon="🔄")
+                        except Exception as e:
+                            st.session_state.route_result = None
+                        st.rerun()
+                    else:
+                        # Start new 2-click route from this spot
+                        place_name = reverse_geocode(click_lat, click_lon)
+                        st.session_state.start_name = place_name
+                        st.session_state.start_coords = (click_lat, click_lon)
+                        st.session_state.start_address = place_name
+                        st.session_state.dest_name = None
+                        st.session_state.dest_coords = None
+                        st.session_state.dest_address = None
+                        st.session_state.route_result = None
+                        st.session_state.alternative_results = None
+                        st.session_state.searched_location = None
+                        st.session_state.click_route_step = "dest"
+                        st.toast(f"📍 New Start set to '{place_name}'! Click Point B to route.", icon="🚩")
+                        st.rerun()
+
+    if st.session_state.get("last_clicked_coords"):
+        lat_c, lon_c = st.session_state.last_clicked_coords
+        with st.expander(f"📍 Click Details (`{lat_c:.5f}, {lon_c:.5f}`) & Manual Pin Options", expanded=False):
+            col_c1, col_c2, col_c3, col_c4 = st.columns([1, 1, 1, 1])
+            with col_c1:
+                if st.button("📍 Set as Start (Point A)", key="btn_click_start_manual"):
+                    st.session_state.start_name = reverse_geocode(lat_c, lon_c)
+                    st.session_state.start_coords = (lat_c, lon_c)
+                    st.session_state.click_route_step = "dest"
+                    st.rerun()
+            with col_c2:
+                if st.button("🎯 Set as Dest (Point B)", key="btn_click_dest_manual"):
+                    st.session_state.dest_name = reverse_geocode(lat_c, lon_c)
+                    st.session_state.dest_coords = (lat_c, lon_c)
+                    st.session_state.click_route_step = "active"
+                    compute_routes(is_realworld)
+                    st.rerun()
+            with col_c3:
+                if st.button("🔵 Set My Location", key="btn_click_my_loc_manual"):
+                    loc_lbl = reverse_geocode(lat_c, lon_c)
+                    st.session_state.my_location = (lat_c, lon_c, loc_lbl)
+                    st.rerun()
+            with col_c4:
+                if st.button("🔖 Bookmark Spot", key="btn_click_bm_manual"):
+                    st.session_state.show_bookmarks = True
+                    st.rerun()
 
 
 def on_origin_search_enter() -> None:
@@ -1586,6 +2078,7 @@ def render_right_panel(is_realworld: bool) -> None:
 
 def main() -> None:
     init_session_state()
+    _sync_aqi_browser_location()
 
     # ── Custom CSS for Sliding Drawer & Modern Map Styling ───────────────
     st.markdown(
@@ -1634,6 +2127,35 @@ def main() -> None:
             box-shadow: 0 2px 8px rgba(0,0,0,0.04);
             color: #1E293B !important;
         }
+        .click-step-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        .click-step-badge.pending {
+            background: rgba(148, 163, 184, 0.15);
+            color: #64748B;
+            border: 1px solid #CBD5E1;
+        }
+        .click-step-badge.active {
+            background: rgba(37, 99, 235, 0.15);
+            color: #1D4ED8;
+            border: 1px solid #93C5FD;
+            animation: pulseGlow 1.8s infinite;
+        }
+        .click-step-badge.done {
+            background: rgba(22, 163, 74, 0.15);
+            color: #15803D;
+            border: 1px solid #86EFAC;
+        }
+        @keyframes pulseGlow {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.35); }
+            50% { box-shadow: 0 0 0 6px rgba(37, 99, 235, 0); }
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -1658,6 +2180,29 @@ def main() -> None:
         if st.session_state.route_result is not None:
             if st.button("✕ Reset Active Route", use_container_width=True):
                 st.session_state.route_result = None
+                st.rerun()
+
+        st.markdown("---")
+        st.markdown("### 🍃 Air Quality (WAQI)")
+        aqi_sidebar_toggle = st.toggle(
+            "Show Air Quality Overlay",
+            value=st.session_state.get("show_aqi_mode", False),
+            key="sidebar_aqi_toggle",
+            on_change=_on_sidebar_aqi_toggle,
+            help="Directly activates the WAQI (World Air Quality Index) map layer and scale reading",
+        )
+
+        with st.expander("🔑 WAQI API Token Settings", expanded=False):
+            st.caption("PathFinder connects to the World Air Quality Index platform. You can get a free token anytime at [aqicn.org/data-platform/token/](https://aqicn.org/data-platform/token/).")
+            custom_tok = st.text_input(
+                "WAQI Token:",
+                value=st.session_state.get("waqi_custom_token", ""),
+                type="password",
+                key="waqi_sidebar_token_input",
+                help="Enter your personal WAQI API token (defaults to public demo)",
+            )
+            if custom_tok != st.session_state.get("waqi_custom_token", ""):
+                st.session_state.waqi_custom_token = custom_tok.strip()
                 st.rerun()
 
     # ── Top Section: Search Bar & Current Location Controls ──────────────
@@ -1748,7 +2293,7 @@ def main() -> None:
 
         # ── My Current Location Quick Action Bar ──────────────────────────
         my_lat, my_lon, my_label = st.session_state.my_location
-        col_my_info, col_set_btn, col_route_from_my, col_route_to_my = st.columns([2.6, 1.4, 1.4, 1.4])
+        col_my_info, col_set_btn, col_aqi_btn, col_route_from_my, col_route_to_my = st.columns([2.3, 1.3, 1.3, 1.4, 1.4])
         with col_my_info:
             st.markdown(
                 f"""
@@ -1764,6 +2309,18 @@ def main() -> None:
         with col_set_btn:
             if st.button("✏️ Change Location", key="btn_toggle_location_picker", use_container_width=True):
                 st.session_state.show_location_picker = not st.session_state.get("show_location_picker", False)
+                st.rerun()
+
+        with col_aqi_btn:
+            aqi_active = st.session_state.get("show_aqi_mode", False)
+            btn_txt = "✕ Close AQI" if aqi_active else "🍃 Air Quality"
+            btn_tp = "primary" if aqi_active else "secondary"
+            if st.button(btn_txt, key="btn_toggle_aqi_top", type=btn_tp, use_container_width=True, help="Toggle WAQI Air Quality Map & Scale"):
+                if aqi_active:
+                    st.session_state.show_aqi_mode = False
+                    st.session_state.aqi_location_pending = False
+                else:
+                    _enable_aqi_mode()
                 st.rerun()
 
         with col_route_from_my:
@@ -1865,6 +2422,15 @@ def main() -> None:
                 unsafe_allow_html=True,
             )
 
+    # ── 🍃 Air Quality (AQI) Active Banner Card ───────────────────────────
+    if st.session_state.get("show_aqi_mode", False):
+        if st.session_state.get("aqi_location_pending"):
+            st.info("Requesting your location so I can check nearby air quality. Allow location access in your browser.")
+        elif st.session_state.get("aqi_location_error"):
+            st.warning("I couldn't access your GPS location. Allow location access, then close and reopen Air Quality, or click the map to inspect an area.")
+        if st.session_state.get("aqi_inspect_coords"):
+            render_aqi_dashboard_card()
+
     # ── 🚦 Traffic Simulation controls ────────────────────────────────────
     render_traffic_controls(is_realworld)
 
@@ -1955,16 +2521,20 @@ def main() -> None:
     elif primary_result and not primary_result.found:
         st.error(f"❌ No route found between '{st.session_state.start_name}' and '{st.session_state.dest_name}'.")
 
+    # ── Interactive Click-to-Route Dashboard Bar (Zero-typing direct map interaction) ──
+    render_click_to_route_dashboard_bar(is_realworld)
+
     # ── Main Area: Directions Drawer (Left), Map (Center), Bookmarks / Info Panel (Right) ──
     show_left = st.session_state.show_route_menu
     show_right = st.session_state.get("show_info_panel", False) or st.session_state.get("show_bookmarks", False)
+    active_map_height = st.session_state.get("map_height_setting", 700)
 
     if show_left and show_right:
         col_menu, col_map, col_r = st.columns([1.1, 1.8, 1.1], gap="medium")
         with col_menu:
             render_directions_drawer(is_realworld)
         with col_map:
-            _render_map(primary_result, is_realworld, map_height=560)
+            _render_map(primary_result, is_realworld, map_height=active_map_height)
         with col_r:
             render_right_panel(is_realworld)
     elif show_left and not show_right:
@@ -1977,11 +2547,11 @@ def main() -> None:
                 c_sp, c_unhide = st.columns([7.8, 2.2])
                 with c_unhide:
                     st.button("🏛️ Show Place Info", key="btn_unhide_info_side_l", on_click=_open_place_info_panel, use_container_width=True, help="Unhide location info panel")
-            _render_map(primary_result, is_realworld, map_height=560)
+            _render_map(primary_result, is_realworld, map_height=active_map_height)
     elif not show_left and show_right:
         col_map, col_r = st.columns([2.9, 1.1], gap="medium")
         with col_map:
-            _render_map(primary_result, is_realworld, map_height=560)
+            _render_map(primary_result, is_realworld, map_height=active_map_height)
         with col_r:
             render_right_panel(is_realworld)
     else:
@@ -1990,11 +2560,11 @@ def main() -> None:
             c_sp, c_unhide = st.columns([8.2, 1.8])
             with c_unhide:
                 st.button("🏛️ Show Place Info", key="btn_unhide_info_side_full", on_click=_open_place_info_panel, use_container_width=True, help="Unhide location info panel")
-        _render_map(primary_result, is_realworld, map_height=600)
+        _render_map(primary_result, is_realworld, map_height=active_map_height)
 
     # ── Bottom Control Bar: Buttons to Open/Close Directions, Info Panel, and Bookmarks ──
     st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
-    col_bottom_left, col_bottom_info, col_bottom_space, col_bottom_right = st.columns([2.0, 2.0, 4.0, 2.0])
+    col_bottom_left, col_bottom_info, col_bottom_aqi, col_bottom_space, col_bottom_right = st.columns([2.0, 2.0, 2.0, 2.0, 2.0])
     with col_bottom_left:
         if not st.session_state.show_route_menu:
             if st.button("🧭 Go (Directions)", type="primary", use_container_width=True, key="btn_go_bottom_left"):
@@ -2015,6 +2585,18 @@ def main() -> None:
             st.button("🏛️ Place Info", type="secondary", use_container_width=True, key="btn_open_info_bottom", disabled=not has_any_location, on_click=_open_place_info_panel, help="View Wikipedia information for location or route")
         else:
             st.button("✕ Hide Place Info", use_container_width=True, key="btn_close_info_bottom", on_click=_close_place_info_panel)
+
+    with col_bottom_aqi:
+        aqi_active = st.session_state.get("show_aqi_mode", False)
+        btn_txt = "✕ Close AQI" if aqi_active else "🍃 Air Quality"
+        btn_tp = "primary" if aqi_active else "secondary"
+        if st.button(btn_txt, key="btn_toggle_aqi_bottom", type=btn_tp, use_container_width=True, help="Toggle WAQI Air Quality Map & Scale"):
+            if aqi_active:
+                st.session_state.show_aqi_mode = False
+                st.session_state.aqi_location_pending = False
+            else:
+                _enable_aqi_mode()
+            st.rerun()
 
     with col_bottom_right:
         if not st.session_state.show_bookmarks:
