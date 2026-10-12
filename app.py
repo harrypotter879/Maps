@@ -35,7 +35,7 @@ from astar import find_shortest_path_astar, find_alternative_routes
 from dijkstra import PathResult
 from osm_loader import get_ranchi_road_network, RANCHI_LANDMARKS
 from geocoder import search_locations, reverse_geocode, GeocodedLocation
-from map_view import build_folium_map, build_empty_map
+from map_view import build_folium_map, build_empty_map, _extract_polyline_points
 from display import format_distance
 from worldwide_router import fetch_worldwide_route, WORLDWIDE_LANDMARKS, is_in_ranchi
 from traffic import (
@@ -54,6 +54,10 @@ BOOKMARKS_FILE = os.path.join(DATA_DIR, "bookmarks.json")
 _browser_geolocation = components.declare_component(
     "pathfinder_browser_geolocation",
     path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_geolocation"),
+)
+_browser_globe = components.declare_component(
+    "pathfinder_browser_globe",
+    path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_globe"),
 )
 
 
@@ -1038,45 +1042,126 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
 
     if st.session_state.globe_mode:
         globe_center = (
-            st.session_state.get("start_coords")
-            or st.session_state.get("searched_location")
+            st.session_state.get("searched_location")
+            or st.session_state.get("start_coords")
+            or st.session_state.get("dest_coords")
             or st.session_state.get("my_location")
             or (23.3191843, 85.2987681)
         )
-        globe_lat, globe_lon = float(globe_center[0]), float(globe_center[1])
-        globe_html = f"""
-        <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.1.0/dist/maplibre-gl.css">
-        <style>
-            html, body, #pf-globe {{ margin: 0; width: 100%; height: 100%; overflow: hidden; }}
-            #pf-globe {{ background: #071a2e; }}
-        </style>
-        <div id="pf-globe" aria-label="Interactive 3D globe"></div>
-        <script src="https://unpkg.com/maplibre-gl@5.1.0/dist/maplibre-gl.js"></script>
-        <script>
-        new maplibregl.Map({{
-            container: 'pf-globe',
-            center: [{globe_lon}, {globe_lat}],
-            zoom: 1.35,
-            minZoom: 0.7,
-            maxZoom: 17,
-            style: {{
-                version: 8,
-                projection: {{ type: 'globe' }},
-                sources: {{
-                    osm: {{
-                        type: 'raster',
-                        tiles: ['https://tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png'],
-                        tileSize: 256,
-                        attribution: '&copy; OpenStreetMap contributors'
-                    }}
-                }},
-                layers: [{{ id: 'osm-layer', type: 'raster', source: 'osm' }}],
-                sky: {{ 'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 1, 5, 1, 7, 0] }}
-            }}
-        }}).addControl(new maplibregl.NavigationControl({{ showCompass: true }}), 'top-right');
-        </script>
-        """
-        components.html(globe_html, height=map_height, scrolling=False)
+        globe_points = []
+        for coords, label, color in (
+            (st.session_state.get("start_coords"), st.session_state.get("start_name"), "green"),
+            (st.session_state.get("dest_coords"), st.session_state.get("dest_name"), "red"),
+            (st.session_state.get("searched_location"), "Searched place", "purple"),
+        ):
+            if coords:
+                globe_points.append({"lat": float(coords[0]), "lon": float(coords[1]), "label": label or "Point"})
+
+        globe_route = []
+        if primary_result and primary_result.found:
+            if st.session_state.get("is_worldwide_active") and st.session_state.get("worldwide_graph"):
+                globe_graph = st.session_state.worldwide_graph
+            elif is_realworld:
+                globe_graph = load_cached_osm_network()
+            else:
+                globe_graph = load_fictional_network()
+            globe_route = _extract_polyline_points(globe_graph, primary_result.path)
+
+        globe_click = _browser_globe(
+            key="pathfinder-globe",
+            default=None,
+            center=[float(globe_center[0]), float(globe_center[1])],
+            points=globe_points,
+            route=globe_route,
+            aqi=bool(st.session_state.get("show_aqi_mode", False)),
+            aqi_token=st.session_state.get("waqi_custom_token", "") or "demo",
+        )
+        if isinstance(globe_click, dict) and globe_click.get("event") == "click":
+            click_id = globe_click.get("id")
+            if click_id != st.session_state.get("last_globe_click_id"):
+                st.session_state.last_globe_click_id = click_id
+                st.session_state.last_clicked_coords = (
+                    float(globe_click["latitude"]),
+                    float(globe_click["longitude"]),
+                )
+                click_lat, click_lon = st.session_state.last_clicked_coords
+                active_picker = st.session_state.get("map_picker_mode")
+                place_name = reverse_geocode(click_lat, click_lon) or f"Location ({click_lat:.4f}, {click_lon:.4f})"
+
+                if active_picker == "origin":
+                    st.session_state.start_name = place_name
+                    st.session_state.start_coords = (click_lat, click_lon)
+                    st.session_state.start_address = place_name
+                    st.session_state.map_picker_mode = None
+                    st.session_state.show_route_menu = True
+                    if st.session_state.get("dest_coords"):
+                        compute_routes(is_realworld)
+                    st.toast(f"🚩 Origin set to '{place_name}'.", icon="🚩")
+                elif active_picker == "destination":
+                    st.session_state.dest_name = place_name
+                    st.session_state.dest_coords = (click_lat, click_lon)
+                    st.session_state.dest_address = place_name
+                    st.session_state.map_picker_mode = None
+                    st.session_state.show_route_menu = True
+                    if st.session_state.get("start_coords"):
+                        compute_routes(is_realworld)
+                    st.toast(f"🏁 Destination set to '{place_name}'.", icon="🏁")
+                elif active_picker == "search":
+                    st.session_state.searched_location = (click_lat, click_lon, place_name)
+                    st.session_state.searched_address = place_name
+                    st.session_state.map_picker_mode = None
+                    st.toast(f"📍 Location selected: '{place_name}'.", icon="📍")
+                elif st.session_state.get("show_aqi_mode", False):
+                    st.session_state.aqi_inspect_coords = (click_lat, click_lon, place_name)
+                    st.session_state.aqi_location_pending = False
+                    st.session_state.aqi_location_error = None
+                    st.toast(f"🍃 Checking AQI for {place_name}.", icon="🍃")
+                else:
+                    if not st.session_state.get("start_coords"):
+                        st.session_state.start_name = place_name
+                        st.session_state.start_coords = (click_lat, click_lon)
+                        st.session_state.click_route_step = "dest"
+                        st.session_state.show_route_menu = True
+                        st.toast(f"🚩 Point A set to '{place_name}'. Click the globe again for Point B.", icon="🚩")
+                    else:
+                        st.session_state.dest_name = place_name
+                        st.session_state.dest_coords = (click_lat, click_lon)
+                        st.session_state.click_route_step = "active"
+                        st.session_state.show_route_menu = True
+                        try:
+                            compute_routes(is_realworld)
+                            st.toast(f"🏁 Point B set to '{place_name}'. Route calculated.", icon="🚀")
+                        except Exception:
+                            st.session_state.route_result = None
+                            st.toast(f"🏁 Point B set to '{place_name}', but no route was found.", icon="🏁")
+                st.rerun()
+        if st.session_state.get("last_clicked_coords"):
+            lat_c, lon_c = st.session_state.last_clicked_coords
+            st.caption(f"Selected globe point: `{lat_c:.5f}, {lon_c:.5f}`")
+            globe_col1, globe_col2, globe_col3, globe_col4 = st.columns(4)
+            with globe_col1:
+                if st.button("📍 Set as Start", key="btn_globe_start"):
+                    st.session_state.start_name = reverse_geocode(lat_c, lon_c) or f"Location ({lat_c:.4f}, {lon_c:.4f})"
+                    st.session_state.start_coords = (lat_c, lon_c)
+                    st.session_state.click_route_step = "dest"
+                    st.rerun()
+            with globe_col2:
+                if st.button("🎯 Set as Destination", key="btn_globe_dest"):
+                    st.session_state.dest_name = reverse_geocode(lat_c, lon_c) or f"Location ({lat_c:.4f}, {lon_c:.4f})"
+                    st.session_state.dest_coords = (lat_c, lon_c)
+                    if st.session_state.get("start_coords"):
+                        compute_routes(is_realworld)
+                    st.rerun()
+            with globe_col3:
+                if st.button("🔵 My Location", key="btn_globe_location"):
+                    label = reverse_geocode(lat_c, lon_c) or f"Location ({lat_c:.4f}, {lon_c:.4f})"
+                    st.session_state.my_location = (lat_c, lon_c, label)
+                    st.rerun()
+            with globe_col4:
+                if st.button("🔖 Bookmark", key="btn_globe_bookmark"):
+                    label = reverse_geocode(lat_c, lon_c) or f"Globe point ({lat_c:.4f}, {lon_c:.4f})"
+                    add_bookmark(label, label, lat_c, lon_c)
+                    st.toast(f"🔖 Saved '{label}'.", icon="🔖")
         return
 
     active_aqi_data = None
