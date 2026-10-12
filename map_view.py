@@ -548,6 +548,134 @@ def _add_search_widget(m: Any) -> None:
     m.get_root().html.add_child(folium.Element(search_html))
 
 
+def _add_globe_toggle(m: Any, center: Tuple[float, float]) -> None:
+    """Add a toggleable MapLibre globe over the Leaflet map."""
+    import folium
+
+    globe_lat, globe_lon = center
+    globe_html = f"""
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.1.0/dist/maplibre-gl.css">
+    <style>
+        #pf-globe-toggle {{
+            position: fixed;
+            top: 72px;
+            right: 18px;
+            z-index: 1100;
+            border: 0;
+            border-radius: 7px;
+            background: #ffffff;
+            color: #1f2937;
+            box-shadow: 0 2px 7px rgba(0,0,0,0.28);
+            padding: 9px 13px;
+            font: 600 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            cursor: pointer;
+        }}
+        #pf-globe-toggle:hover {{ background: #f3f4f6; }}
+        #pf-globe {{
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 900;
+            background: #071a2e;
+        }}
+        #pf-globe.is-active {{ display: block; }}
+        #pf-globe .maplibregl-ctrl-attrib {{ font-size: 10px; }}
+    </style>
+    <button id="pf-globe-toggle" type="button" aria-pressed="false">🌐 Globe</button>
+    <div id="pf-globe" aria-label="Interactive 3D globe"></div>
+    <script>
+    (function() {{
+        function setupGlobeToggle() {{
+            var toggle = document.getElementById('pf-globe-toggle');
+            var globeElement = document.getElementById('pf-globe');
+            var globeMap = null;
+            var mapLibreLoading = null;
+
+            if (!toggle || !globeElement) return;
+
+            function loadMapLibre(onReady) {{
+                if (window.maplibregl) {{
+                    onReady();
+                    return;
+                }}
+                if (!mapLibreLoading) {{
+                    mapLibreLoading = document.createElement('script');
+                    mapLibreLoading.src = 'https://unpkg.com/maplibre-gl@5.1.0/dist/maplibre-gl.js';
+                    mapLibreLoading.onload = onReady;
+                    mapLibreLoading.onerror = function() {{
+                        toggle.textContent = '🌐 Globe unavailable';
+                        toggle.disabled = false;
+                        toggle.title = 'MapLibre could not be loaded. Check your internet connection.';
+                    }};
+                    document.head.appendChild(mapLibreLoading);
+                }} else {{
+                    mapLibreLoading.addEventListener('load', onReady, {{ once: true }});
+                }}
+            }}
+
+            function createGlobe() {{
+                globeMap = new maplibregl.Map({{
+                    container: globeElement,
+                    center: [{globe_lon}, {globe_lat}],
+                    zoom: 1.35,
+                    minZoom: 0.7,
+                    maxZoom: 17,
+                    style: {{
+                        version: 8,
+                        projection: {{ type: 'globe' }},
+                        sources: {{
+                            'osm': {{
+                                type: 'raster',
+                                tiles: ['https://tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png'],
+                                tileSize: 256,
+                                attribution: '&copy; OpenStreetMap contributors'
+                            }}
+                        }},
+                        layers: [{{ id: 'osm-layer', type: 'raster', source: 'osm' }}],
+                        sky: {{
+                            'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 1, 5, 1, 7, 0]
+                        }}
+                    }}
+                }});
+                globeMap.addControl(new maplibregl.NavigationControl({{ showCompass: true }}), 'top-right');
+            }}
+
+            toggle.addEventListener('click', function() {{
+                var leafletElement = document.querySelector('.leaflet-container');
+                if (!leafletElement) return;
+                var active = globeElement.classList.toggle('is-active');
+                toggle.setAttribute('aria-pressed', String(active));
+                toggle.textContent = active ? '🗺️ Map' : '🌐 Globe';
+                leafletElement.style.visibility = active ? 'hidden' : 'visible';
+                leafletElement.style.pointerEvents = active ? 'none' : 'auto';
+                if (active) {{
+                    if (!globeMap) {{
+                        toggle.disabled = true;
+                        loadMapLibre(function() {{
+                            toggle.disabled = false;
+                            createGlobe();
+                        }});
+                    }} else {{
+                        globeMap.resize();
+                    }}
+                }}
+            }});
+        }}
+
+        if (document.readyState === 'loading') {{
+            document.addEventListener('DOMContentLoaded', setupGlobeToggle);
+        }} else {{
+            setupGlobeToggle();
+        }}
+    }})();
+    </script>
+    """
+    globe_markup, globe_script = globe_html.split("<script>", 1)
+    globe_script = globe_script.rsplit("</script>", 1)[0]
+    m.get_root().html.add_child(folium.Element(globe_markup))
+    m.get_root().script.add_child(folium.Element(globe_script))
+
+
 def _add_current_location_marker(m: Any, current_location: Tuple[float, float, str]) -> None:
     """Render a glowing blue dot marker representing the user's current location."""
     import folium

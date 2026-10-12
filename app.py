@@ -1028,6 +1028,57 @@ def render_click_to_route_dashboard_bar(is_realworld: bool) -> None:
 
 def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_height: int = 580) -> None:
     """Helper to render interactive Folium map with current points, blue dot marker, or clean state."""
+    if "globe_mode" not in st.session_state:
+        st.session_state.globe_mode = False
+
+    globe_label = "🗺️ Map" if st.session_state.globe_mode else "🌐 Globe"
+    if st.button(globe_label, key="btn_globe_mode", help="Switch between the interactive map and 3D globe"):
+        st.session_state.globe_mode = not st.session_state.globe_mode
+        st.rerun()
+
+    if st.session_state.globe_mode:
+        globe_center = (
+            st.session_state.get("start_coords")
+            or st.session_state.get("searched_location")
+            or st.session_state.get("my_location")
+            or (23.3191843, 85.2987681)
+        )
+        globe_lat, globe_lon = float(globe_center[0]), float(globe_center[1])
+        globe_html = f"""
+        <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.1.0/dist/maplibre-gl.css">
+        <style>
+            html, body, #pf-globe {{ margin: 0; width: 100%; height: 100%; overflow: hidden; }}
+            #pf-globe {{ background: #071a2e; }}
+        </style>
+        <div id="pf-globe" aria-label="Interactive 3D globe"></div>
+        <script src="https://unpkg.com/maplibre-gl@5.1.0/dist/maplibre-gl.js"></script>
+        <script>
+        new maplibregl.Map({{
+            container: 'pf-globe',
+            center: [{globe_lon}, {globe_lat}],
+            zoom: 1.35,
+            minZoom: 0.7,
+            maxZoom: 17,
+            style: {{
+                version: 8,
+                projection: {{ type: 'globe' }},
+                sources: {{
+                    osm: {{
+                        type: 'raster',
+                        tiles: ['https://tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png'],
+                        tileSize: 256,
+                        attribution: '&copy; OpenStreetMap contributors'
+                    }}
+                }},
+                layers: [{{ id: 'osm-layer', type: 'raster', source: 'osm' }}],
+                sky: {{ 'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 1, 5, 1, 7, 0] }}
+            }}
+        }}).addControl(new maplibregl.NavigationControl({{ showCompass: true }}), 'top-right');
+        </script>
+        """
+        components.html(globe_html, height=map_height, scrolling=False)
+        return
+
     active_aqi_data = None
     if (
         st.session_state.get("show_aqi_mode", False)
