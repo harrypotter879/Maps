@@ -1769,5 +1769,136 @@ class TestWorldwideNavigation(unittest.TestCase):
         self.assertEqual(st.session_state.start_coords, (23.3699, 85.3253))
 
 
+class TestWikipediaPlaceInfo(unittest.TestCase):
+    """Tests for Wikipedia Location Information panel and wiki_info module."""
+
+    def test_clean_html_to_text(self) -> None:
+        from wiki_info import _clean_html_to_text
+        sample_html = (
+            "<p>The <b>Eiffel Tower</b> is a landmark in Paris.[1][edit]</p>"
+            "<script>alert(1);</script>"
+            "<sup>[2]</sup>"
+            "<p>It was built for the 1889 World's Fair in France.</p>"
+        )
+        cleaned = _clean_html_to_text(sample_html)
+        self.assertNotIn("<b>", cleaned)
+        self.assertNotIn("[1]", cleaned)
+        self.assertNotIn("[edit]", cleaned)
+        self.assertNotIn("alert", cleaned)
+        self.assertIn("Eiffel Tower", cleaned)
+
+    def test_wiki_info_fields_structure(self) -> None:
+        """Ensure all 5 required fields are returned by fetch_wiki_info_for_location."""
+        from wiki_info import fetch_wiki_info_for_location
+        res = fetch_wiki_info_for_location("Eiffel Tower", 48.8584, 2.2945)
+        self.assertIn("name", res)
+        self.assertIn("picture", res)
+        self.assertIn("description", res)
+        self.assertIn("history", res)
+        self.assertIn("wiki_link", res)
+        self.assertTrue(res["found"])
+        self.assertIn("Eiffel Tower", res["name"])
+        self.assertTrue(len(res["description"]) > 20)
+        self.assertIn("wikipedia.org", res["wiki_link"])
+
+    def test_wiki_info_picture_none_or_str(self) -> None:
+        """Verify picture field is either None or valid image URL without crashing."""
+        from wiki_info import fetch_wiki_info_for_location
+        res = fetch_wiki_info_for_location("Kairali School", 23.3191, 85.2987)
+        self.assertIn("name", res)
+        self.assertTrue(res["picture"] is None or isinstance(res["picture"], str))
+        self.assertTrue(len(res["description"]) > 0)
+        self.assertTrue(len(res["history"]) > 0)
+
+    def test_wiki_info_unknown_location_fallback(self) -> None:
+        """Verify non-existent place returns graceful fallback without error."""
+        from wiki_info import fetch_wiki_info_for_location
+        res = fetch_wiki_info_for_location("XyZ987NonExistentPlaceAlphaBeta123456", 0.0, 0.0)
+        self.assertIn("name", res)
+        self.assertIn("description", res)
+        self.assertIn("history", res)
+        self.assertIn("wiki_link", res)
+        self.assertFalse(res["found"])
+
+    def test_init_session_state_info_panel(self) -> None:
+        """Verify show_info_panel and info_panel_target initialize properly."""
+        import streamlit as st
+        from app import init_session_state
+
+        if "show_info_panel" in st.session_state:
+            del st.session_state["show_info_panel"]
+        if "info_panel_target" in st.session_state:
+            del st.session_state["info_panel_target"]
+
+        init_session_state()
+        self.assertFalse(st.session_state.show_info_panel)
+        self.assertEqual(st.session_state.info_panel_target, "destination")
+
+    def test_clear_global_search_pin_resets_info_panel(self) -> None:
+        """Verify clear_global_search_pin closes info panel when no route active."""
+        import streamlit as st
+        from app import clear_global_search_pin
+
+        st.session_state.searched_location = (23.34, 85.30, "Test Location")
+        st.session_state.searched_address = "Test Street, Test City"
+        st.session_state.start_coords = None
+        st.session_state.dest_coords = None
+        st.session_state.show_info_panel = True
+
+        clear_global_search_pin()
+        self.assertIsNone(st.session_state.searched_location)
+        self.assertIsNone(st.session_state.searched_address)
+        self.assertFalse(st.session_state.show_info_panel)
+
+    def test_location_based_wiki_resolution_big_ben_philippines(self) -> None:
+        """Verify 'Big Ben' in Lipa, Batangas resolves to Lipa, Batangas (NOT London)."""
+        from wiki_info import _resolve_location_article, fetch_wiki_info_for_location
+
+        resolved = _resolve_location_article("Big Ben", 13.94223, 121.15312)
+        self.assertEqual(resolved, "Lipa, Batangas")
+        data = fetch_wiki_info_for_location("Big Ben", 13.94223, 121.15312)
+        self.assertIn("Lipa", data["name"])
+        self.assertNotIn("Westminster", data.get("description", ""))
+
+    def test_location_based_wiki_resolution_big_ben_australia(self) -> None:
+        """Verify 'Big Ben' in Emmaville, NSW resolves to Emmaville (NOT London)."""
+        from wiki_info import _resolve_location_article, fetch_wiki_info_for_location
+
+        resolved = _resolve_location_article("Big Ben", -29.4447, 151.6164)
+        self.assertEqual(resolved, "Emmaville, New South Wales")
+        data = fetch_wiki_info_for_location("Big Ben", -29.4447, 151.6164)
+        self.assertIn("Emmaville", data["name"])
+        self.assertNotIn("Westminster", data.get("description", ""))
+
+    def test_location_based_wiki_resolution_albert_ekka_chowk(self) -> None:
+        """Verify 'Albert Ekka Chowk' resolves to Ranchi (NOT soldier biographical page)."""
+        from wiki_info import _resolve_location_article, fetch_wiki_info_for_location
+
+        resolved = _resolve_location_article("Albert Ekka Chowk", 23.3698, 85.3253)
+        self.assertEqual(resolved, "Ranchi")
+        data = fetch_wiki_info_for_location("Albert Ekka Chowk", 23.3698, 85.3253)
+        self.assertIn("Ranchi", data["name"])
+        self.assertIn("capital city", data.get("description", "").lower())
+
+    def test_location_based_wiki_resolution_big_ben_london(self) -> None:
+        """Verify 'Big Ben' at London coordinates resolves to Big Ben clock tower."""
+        from wiki_info import _resolve_location_article, fetch_wiki_info_for_location
+
+        resolved = _resolve_location_article("Big Ben", 51.5007, -0.1246)
+        self.assertEqual(resolved, "Big Ben")
+        data = fetch_wiki_info_for_location("Big Ben", 51.5007, -0.1246)
+        self.assertEqual(data["name"], "Big Ben")
+
+    def test_location_based_wiki_resolution_harmu_housing_colony(self) -> None:
+        """Verify 'Harmu Housing Colony' specifically resolves to Harmu Housing Colony, Ranchi."""
+        from wiki_info import _resolve_location_article, fetch_wiki_info_for_location
+
+        resolved = _resolve_location_article("Harmu Housing Colony", 23.36100, 85.31020, "Harmu Housing Colony, Ranchi, Jharkhand, India")
+        self.assertEqual(resolved, "Harmu Housing Colony, Ranchi")
+        data = fetch_wiki_info_for_location("Harmu Housing Colony", 23.36100, 85.31020, "Harmu Housing Colony, Ranchi, Jharkhand, India")
+        self.assertIn("Harmu", data["name"])
+        self.assertTrue(data["found"])
+
+
 if __name__ == "__main__":
     unittest.main()

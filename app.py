@@ -41,6 +41,7 @@ from traffic import (
     SHORTEST_DISTANCE, TRAFFIC_AWARE, PERIOD_LABELS,
     analyse_route, apply_traffic_mode, normalize_departure_time, get_traffic_period,
 )
+from wiki_info import fetch_wiki_info_for_location
 
 MY_LOCATION_LABEL = "🔵 My Current Location"
 MAX_BOOKMARKS = 20
@@ -190,10 +191,18 @@ def init_session_state() -> None:
     if "start_name" not in st.session_state:
         st.session_state.start_name = None
         st.session_state.start_coords = None
+        st.session_state.start_address = None
 
     if "dest_name" not in st.session_state:
         st.session_state.dest_name = None
         st.session_state.dest_coords = None
+        st.session_state.dest_address = None
+
+    if "searched_address" not in st.session_state:
+        st.session_state.searched_address = None
+
+    if "prev_search_suggestion" not in st.session_state:
+        st.session_state.prev_search_suggestion = None
 
     # Clear active route if endpoints are incomplete
     if not st.session_state.get("start_coords") or not st.session_state.get("dest_coords"):
@@ -235,6 +244,12 @@ def init_session_state() -> None:
         st.session_state.bookmarks = load_bookmarks()
     if "show_bookmarks" not in st.session_state:
         st.session_state.show_bookmarks = False
+
+    # Wikipedia location information right panel is closed by default at startup!
+    if "show_info_panel" not in st.session_state:
+        st.session_state.show_info_panel = False
+    if "info_panel_target" not in st.session_state:
+        st.session_state.info_panel_target = "destination"
 
     if "last_clicked_coords" not in st.session_state:
         st.session_state.last_clicked_coords = None
@@ -311,6 +326,8 @@ def compute_routes(is_realworld: bool) -> None:
         st.session_state.baseline_result = None
         st.session_state.is_worldwide_active = False
         st.session_state.worldwide_graph = None
+        st.session_state.show_info_panel = True
+        st.session_state.info_panel_target = "destination"
         return
 
     # Real-world routing
@@ -366,6 +383,10 @@ def compute_routes(is_realworld: bool) -> None:
         else:
             st.session_state.alternative_results = []
             st.session_state.route_result = w_results[0] if w_results else None
+
+    # When a route is computed, automatically open the right panel showing Destination info
+    st.session_state.show_info_panel = True
+    st.session_state.info_panel_target = "destination"
 
 
 def on_routing_settings_change() -> None:
@@ -565,12 +586,15 @@ def swap_locations() -> None:
     """Swap start and destination locations in session state."""
     old_start_name = st.session_state.start_name
     old_start_coords = st.session_state.start_coords
+    old_start_address = st.session_state.get("start_address")
 
     st.session_state.start_name = st.session_state.dest_name
     st.session_state.start_coords = st.session_state.dest_coords
+    st.session_state.start_address = st.session_state.get("dest_address")
 
     st.session_state.dest_name = old_start_name
     st.session_state.dest_coords = old_start_coords
+    st.session_state.dest_address = old_start_address
 
     # Clear previous route so user re-computes in the opposite direction
     st.session_state.route_result = None
@@ -579,7 +603,13 @@ def swap_locations() -> None:
 def clear_global_search_pin() -> None:
     """Callback function to clear search pin and search input before widget instantiation."""
     st.session_state.searched_location = None
+    st.session_state.searched_address = None
+    st.session_state.prev_search_suggestion = None
     st.session_state.global_search_input = ""
+    if not (st.session_state.get("start_coords") and st.session_state.get("dest_coords")):
+        st.session_state.show_info_panel = False
+    else:
+        st.session_state.info_panel_target = "destination"
 
 
 def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_height: int = 580) -> None:
@@ -678,6 +708,7 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
     map_signature = "|".join((
         "drawer" if st.session_state.show_route_menu else "full",
         "bm_panel" if st.session_state.get("show_bookmarks") else "no_bm",
+        "info_panel" if st.session_state.get("show_info_panel") else "no_info",
         route_signature,
         get_traffic_mode() or "distance",
         st.session_state.departure_time.strftime("%H:%M"),
@@ -704,6 +735,7 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
                 st.session_state.start_coords = (click_lat, click_lon)
                 st.session_state.searched_location = None
                 st.session_state.show_route_menu = True
+                st.session_state.show_info_panel = True
                 if st.session_state.dest_coords and st.session_state.dest_name:
                     try:
                         compute_routes(is_realworld)
@@ -711,6 +743,7 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
                         st.session_state.route_result = None
                 else:
                     st.session_state.route_result = None
+                    st.session_state.info_panel_target = "origin"
                 st.rerun()
         with col_c2:
             if st.button("🎯 Set as Dest & Open Go", key="btn_click_dest"):
@@ -718,6 +751,8 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
                 st.session_state.dest_coords = (click_lat, click_lon)
                 st.session_state.searched_location = None
                 st.session_state.show_route_menu = True
+                st.session_state.show_info_panel = True
+                st.session_state.info_panel_target = "destination"
                 if st.session_state.start_coords and st.session_state.start_name:
                     try:
                         compute_routes(is_realworld)
@@ -731,6 +766,8 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
                 loc_label = reverse_geocode(click_lat, click_lon)
                 st.session_state.my_location = (click_lat, click_lon, loc_label)
                 st.session_state.searched_location = st.session_state.my_location
+                st.session_state.show_info_panel = True
+                st.session_state.info_panel_target = "searched"
                 st.rerun()
         with col_c4:
             if st.button("🔖 Bookmark Location", key="btn_click_bookmark"):
@@ -748,11 +785,13 @@ def on_origin_search_enter() -> None:
         top = results[0]
         st.session_state.start_name = top.name
         st.session_state.start_coords = (top.lat, top.lon)
+        st.session_state.start_address = top.display_name
         st.session_state.searched_location = None  # Ensure proper start flag marker appears
         st.session_state.origin_status_msg = f"✓ Set: {top.format_display_label()}"
         st.session_state.origin_alternatives = results[1:] if len(results) > 1 else []
         st.session_state.drawer_origin_search_input = ""
         is_rw = "Real-World" in st.session_state.get("network_mode", "Real-World")
+        st.session_state.show_info_panel = True
         if st.session_state.dest_coords and st.session_state.dest_name:
             try:
                 compute_routes(is_rw)
@@ -760,6 +799,7 @@ def on_origin_search_enter() -> None:
                 st.session_state.route_result = None
         else:
             st.session_state.route_result = None
+            st.session_state.info_panel_target = "origin"
     else:
         st.session_state.origin_status_msg = f"❌ No location found for '{query}'"
         st.session_state.origin_alternatives = []
@@ -775,10 +815,13 @@ def on_dest_search_enter() -> None:
         top = results[0]
         st.session_state.dest_name = top.name
         st.session_state.dest_coords = (top.lat, top.lon)
+        st.session_state.dest_address = top.display_name
         st.session_state.searched_location = None  # Ensure proper destination flag marker appears
         st.session_state.dest_status_msg = f"✓ Set: {top.format_display_label()}"
         st.session_state.dest_alternatives = results[1:] if len(results) > 1 else []
         st.session_state.drawer_dest_search_input = ""
+        st.session_state.show_info_panel = True
+        st.session_state.info_panel_target = "destination"
         is_rw = "Real-World" in st.session_state.get("network_mode", "Real-World")
         if st.session_state.start_coords and st.session_state.start_name:
             try:
@@ -814,6 +857,7 @@ def on_preset_origin_selected() -> None:
     # Reset widget state so it never re-triggers or loops
     st.session_state.select_preset_origin_quick = "-- Preset Landmarks --"
     is_rw = "Real-World" in st.session_state.get("network_mode", "Real-World")
+    st.session_state.show_info_panel = True
     if st.session_state.dest_coords and st.session_state.dest_name:
         try:
             compute_routes(is_rw)
@@ -821,6 +865,7 @@ def on_preset_origin_selected() -> None:
             st.session_state.route_result = None
     else:
         st.session_state.route_result = None
+        st.session_state.info_panel_target = "origin"
 
 
 def on_preset_dest_selected() -> None:
@@ -845,6 +890,8 @@ def on_preset_dest_selected() -> None:
     # Reset widget state so it never re-triggers or loops
     st.session_state.select_preset_dest_quick = "-- Preset Landmarks --"
     is_rw = "Real-World" in st.session_state.get("network_mode", "Real-World")
+    st.session_state.show_info_panel = True
+    st.session_state.info_panel_target = "destination"
     if st.session_state.start_coords and st.session_state.start_name:
         try:
             compute_routes(is_rw)
@@ -890,6 +937,12 @@ def render_directions_drawer(is_realworld: bool) -> None:
                     st.session_state.route_result = None
                     st.session_state.origin_status_msg = None
                     st.session_state.origin_alternatives = []
+                    if st.session_state.get("dest_coords"):
+                        st.session_state.info_panel_target = "destination"
+                    elif st.session_state.get("searched_location"):
+                        st.session_state.info_panel_target = "searched"
+                    else:
+                        st.session_state.show_info_panel = False
                     st.rerun()
         else:
             st.markdown(
@@ -918,6 +971,7 @@ def render_directions_drawer(is_realworld: bool) -> None:
                     if st.button(f"📍 {alt.format_display_label()}", key=f"btn_alt_orig_{i}", use_container_width=True):
                         st.session_state.start_name = alt.name
                         st.session_state.start_coords = (alt.lat, alt.lon)
+                        st.session_state.start_address = alt.display_name
                         st.session_state.searched_location = None
                         st.session_state.origin_status_msg = f"✓ Set: {alt.format_display_label()}"
                         st.session_state.origin_alternatives = []
@@ -995,6 +1049,12 @@ def render_directions_drawer(is_realworld: bool) -> None:
                     st.session_state.route_result = None
                     st.session_state.dest_status_msg = None
                     st.session_state.dest_alternatives = []
+                    if st.session_state.get("start_coords"):
+                        st.session_state.info_panel_target = "origin"
+                    elif st.session_state.get("searched_location"):
+                        st.session_state.info_panel_target = "searched"
+                    else:
+                        st.session_state.show_info_panel = False
                     st.rerun()
         else:
             st.markdown(
@@ -1023,6 +1083,7 @@ def render_directions_drawer(is_realworld: bool) -> None:
                     if st.button(f"📍 {alt.format_display_label()}", key=f"btn_alt_dest_{i}", use_container_width=True):
                         st.session_state.dest_name = alt.name
                         st.session_state.dest_coords = (alt.lat, alt.lon)
+                        st.session_state.dest_address = alt.display_name
                         st.session_state.searched_location = None
                         st.session_state.dest_status_msg = f"✓ Set: {alt.format_display_label()}"
                         st.session_state.dest_alternatives = []
@@ -1342,6 +1403,187 @@ def render_bookmarks_panel(is_realworld: bool) -> None:
                 st.error(f"Error parsing JSON: {e}")
 
 
+def _close_place_info_panel() -> None:
+    """Callback to hide the place info panel."""
+    st.session_state.show_info_panel = False
+
+
+def _open_place_info_panel() -> None:
+    """Callback to show the place info panel."""
+    st.session_state.show_info_panel = True
+
+
+def render_place_info_panel(is_realworld: bool) -> None:
+    """Render the right-side Wikipedia Location Information Panel."""
+    head_col1, head_col2 = st.columns([4, 1])
+    with head_col1:
+        st.markdown("### 🏛️ Place Info")
+    with head_col2:
+        st.button("✕", key="btn_close_info_panel", on_click=_close_place_info_panel, help="Hide location information panel")
+
+    # Collect available candidates for the dropdown
+    candidates: List[Dict[str, Any]] = []
+
+    # 1. Destination (first priority by default for routes)
+    if st.session_state.get("dest_coords") and st.session_state.get("dest_name"):
+        candidates.append({
+            "key": "destination",
+            "type": "Destination",
+            "label": f"🏁 Destination: {st.session_state.dest_name}",
+            "name": st.session_state.dest_name,
+            "lat": st.session_state.dest_coords[0],
+            "lon": st.session_state.dest_coords[1],
+            "address": st.session_state.get("dest_address", ""),
+        })
+
+    # 2. Origin (can switch to origin in dropdown)
+    if st.session_state.get("start_coords") and st.session_state.get("start_name"):
+        candidates.append({
+            "key": "origin",
+            "type": "Origin",
+            "label": f"🚩 Origin: {st.session_state.start_name}",
+            "name": st.session_state.start_name,
+            "lat": st.session_state.start_coords[0],
+            "lon": st.session_state.start_coords[1],
+            "address": st.session_state.get("start_address", ""),
+        })
+
+    # 3. Searched location (if active and not identical to destination/origin)
+    if st.session_state.get("searched_location"):
+        s_lat, s_lon, s_name = st.session_state.searched_location
+        is_dup = any(abs(c["lat"] - s_lat) < 1e-5 and abs(c["lon"] - s_lon) < 1e-5 for c in candidates)
+        if not is_dup:
+            candidates.append({
+                "key": "searched",
+                "type": "Searched",
+                "label": f"📍 Searched: {s_name}",
+                "name": s_name,
+                "lat": s_lat,
+                "lon": s_lon,
+                "address": st.session_state.get("searched_address", ""),
+            })
+
+    if not candidates:
+        st.info("ℹ️ Search a location or select a route to view Wikipedia information.")
+        return
+
+    # Determine default selection
+    current_target = st.session_state.get("info_panel_target", "destination")
+    candidate_keys = [c["key"] for c in candidates]
+    if current_target in candidate_keys:
+        default_idx = candidate_keys.index(current_target)
+    else:
+        default_idx = 0
+
+    options = [c["label"] for c in candidates]
+    selected_label = st.selectbox(
+        "Location in view:",
+        options=options,
+        index=default_idx,
+        key="info_panel_location_select",
+        help="Select Destination or Origin to view its Wikipedia details",
+    )
+
+    chosen_cand = next(c for c in candidates if c["label"] == selected_label)
+    st.session_state.info_panel_target = chosen_cand["key"]
+
+    # Fetch Wikipedia info
+    with st.spinner("Fetching Wikipedia details..."):
+        wiki_data = fetch_wiki_info_for_location(
+            name=chosen_cand["name"],
+            lat=chosen_cand["lat"],
+            lon=chosen_cand["lon"],
+            address=chosen_cand.get("address", ""),
+        )
+
+    # 1. Name of the place
+    wiki_title = wiki_data.get("name") or chosen_cand["name"]
+    searched_name = chosen_cand["name"]
+    is_same = wiki_title.strip().lower() == searched_name.strip().lower()
+    if is_same:
+        sub_info = f"GPS: {chosen_cand['lat']:.5f}, {chosen_cand['lon']:.5f} &bull; {chosen_cand['type']}"
+    else:
+        sub_info = f"<b>{searched_name}</b> &bull; GPS: {chosen_cand['lat']:.5f}, {chosen_cand['lon']:.5f} &bull; {chosen_cand['type']}"
+
+    st.markdown(
+        f"""
+        <div style="background:#F0FDF4; border:1px solid #BBF7D0; border-radius:8px; padding:10px 12px; margin-top:6px; margin-bottom:10px;">
+            <b style="color:#166534; font-size:15px;">🏛️ {wiki_title}</b><br>
+            <span style="color:#15803D; font-size:11.5px;">{sub_info}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # 2. Picture (if available)
+    picture_url = wiki_data.get("picture")
+    if picture_url:
+        st.image(picture_url, caption=f"📸 {wiki_title}", use_container_width=True)
+    else:
+        st.markdown(
+            """
+            <div style="background:#F8FAFC; border:1px dashed #CBD5E1; border-radius:8px; padding:8px; text-align:center; color:#64748B; font-size:12px; margin-bottom:10px;">
+                🖼️ <i>No photo available on Wikipedia</i>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # 3. Description
+    st.markdown("##### 📝 Description")
+    desc_text = wiki_data.get("description") or "No description available."
+    st.markdown(
+        f"""
+        <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:8px; padding:10px 12px; font-size:13px; line-height:1.55; color:#334155; margin-bottom:10px; max-height:180px; overflow-y:auto;">
+            {desc_text}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # 4. History
+    st.markdown("##### 📜 History")
+    hist_text = wiki_data.get("history") or "No historical records available."
+    st.markdown(
+        f"""
+        <div style="background:#FFFBEB; border:1px solid #FDE68A; border-radius:8px; padding:10px 12px; font-size:12.5px; line-height:1.55; color:#78350F; margin-bottom:10px; max-height:200px; overflow-y:auto;">
+            {hist_text}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # 5. Wiki Link
+    wiki_url = wiki_data.get("wiki_link")
+    if wiki_url:
+        st.markdown(
+            f"""
+            <div style="margin-top:6px; margin-bottom:8px;">
+                <a href="{wiki_url}" target="_blank" style="display:block; text-align:center; background:#2563EB; color:white; padding:8px 12px; border-radius:8px; font-size:13px; font-weight:600; text-decoration:none;">
+                    🌐 Read more on Wikipedia ↗
+                </a>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def render_right_panel(is_realworld: bool) -> None:
+    """Render the right column containing Place Info and/or Bookmarks."""
+    show_info = st.session_state.get("show_info_panel", False)
+    show_bm = st.session_state.get("show_bookmarks", False)
+    if show_info and show_bm:
+        tab_info, tab_bm = st.tabs(["🏛️ Place Info", "🔖 Bookmarks"])
+        with tab_info:
+            render_place_info_panel(is_realworld)
+        with tab_bm:
+            render_bookmarks_panel(is_realworld)
+    elif show_info:
+        render_place_info_panel(is_realworld)
+    elif show_bm:
+        render_bookmarks_panel(is_realworld)
+
+
 def main() -> None:
     init_session_state()
 
@@ -1447,20 +1689,32 @@ def main() -> None:
                         format_func=lambda s: f"📍 {s.format_display_label()}",
                         key="search_suggestion_select",
                     )
-                    if chosen_suggestion:
+                    s_key = (
+                        chosen_suggestion.lat,
+                        chosen_suggestion.lon,
+                        chosen_suggestion.name,
+                    ) if chosen_suggestion else None
+
+                    if s_key and s_key != st.session_state.get("prev_search_suggestion"):
+                        st.session_state.prev_search_suggestion = s_key
                         st.session_state.searched_location = (
                             chosen_suggestion.lat,
                             chosen_suggestion.lon,
                             chosen_suggestion.name,
                         )
+                        st.session_state.searched_address = chosen_suggestion.display_name
+                        st.session_state.show_info_panel = True
+                        st.session_state.info_panel_target = "searched"
                 with col_sug_set_start:
                     st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
                     if st.button("🚩 Set as Start", key="btn_set_searched_start", use_container_width=True):
                         if chosen_suggestion:
                             st.session_state.start_name = chosen_suggestion.name
                             st.session_state.start_coords = (chosen_suggestion.lat, chosen_suggestion.lon)
+                            st.session_state.start_address = chosen_suggestion.display_name
                             st.session_state.searched_location = None
                             st.session_state.show_route_menu = True
+                            st.session_state.show_info_panel = True
                             if st.session_state.dest_coords and st.session_state.dest_name:
                                 try:
                                     compute_routes(is_realworld)
@@ -1468,6 +1722,7 @@ def main() -> None:
                                     st.session_state.route_result = None
                             else:
                                 st.session_state.route_result = None
+                                st.session_state.info_panel_target = "origin"
                             st.rerun()
                 with col_sug_set_dest:
                     st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
@@ -1475,8 +1730,11 @@ def main() -> None:
                         if chosen_suggestion:
                             st.session_state.dest_name = chosen_suggestion.name
                             st.session_state.dest_coords = (chosen_suggestion.lat, chosen_suggestion.lon)
+                            st.session_state.dest_address = chosen_suggestion.display_name
                             st.session_state.searched_location = None
                             st.session_state.show_route_menu = True
+                            st.session_state.show_info_panel = True
+                            st.session_state.info_panel_target = "destination"
                             if st.session_state.start_coords and st.session_state.start_name:
                                 try:
                                     compute_routes(is_realworld)
@@ -1514,6 +1772,8 @@ def main() -> None:
                 st.session_state.start_coords = (my_lat, my_lon)
                 st.session_state.show_route_menu = True
                 st.session_state.route_result = None
+                st.session_state.show_info_panel = True
+                st.session_state.info_panel_target = "origin"
                 st.rerun()
 
         with col_route_to_my:
@@ -1522,6 +1782,8 @@ def main() -> None:
                 st.session_state.dest_coords = (my_lat, my_lon)
                 st.session_state.show_route_menu = True
                 st.session_state.route_result = None
+                st.session_state.show_info_panel = True
+                st.session_state.info_panel_target = "destination"
                 st.rerun()
 
         # Location Picker Panel (Quick Area Select or Address Search)
@@ -1553,6 +1815,8 @@ def main() -> None:
                             st.session_state.my_location = (coords[0], coords[1], chosen_preset)
                             st.session_state.searched_location = st.session_state.my_location
                         st.session_state.show_location_picker = False
+                        st.session_state.show_info_panel = True
+                        st.session_state.info_panel_target = "searched"
                         st.toast(f"✅ Set My Location to '{chosen_preset}'!", icon="🔵")
                         st.rerun()
 
@@ -1584,6 +1848,8 @@ def main() -> None:
                                     )
                                     st.session_state.searched_location = st.session_state.my_location
                                     st.session_state.show_location_picker = False
+                                    st.session_state.show_info_panel = True
+                                    st.session_state.info_panel_target = "searched"
                                     st.toast(f"✅ Set My Location to '{chosen_my_sug.name}'!", icon="🔵")
                                     st.rerun()
 
@@ -1647,6 +1913,10 @@ def main() -> None:
             if st.button("✕ Clear Route", key="btn_clear_active_route", use_container_width=True):
                 st.session_state.route_result = None
                 st.session_state.alternative_results = None
+                if not st.session_state.get("searched_location"):
+                    st.session_state.show_info_panel = False
+                else:
+                    st.session_state.info_panel_target = "searched"
                 st.rerun()
         with col_c2:
             if not st.session_state.show_route_menu:
@@ -1685,36 +1955,46 @@ def main() -> None:
     elif primary_result and not primary_result.found:
         st.error(f"❌ No route found between '{st.session_state.start_name}' and '{st.session_state.dest_name}'.")
 
-    # ── Main Area: Directions Drawer (Left), Map (Center), Bookmarks Panel (Right) ──
+    # ── Main Area: Directions Drawer (Left), Map (Center), Bookmarks / Info Panel (Right) ──
     show_left = st.session_state.show_route_menu
-    show_right = st.session_state.show_bookmarks
+    show_right = st.session_state.get("show_info_panel", False) or st.session_state.get("show_bookmarks", False)
 
     if show_left and show_right:
-        col_menu, col_map, col_bmarks = st.columns([1.1, 1.8, 1.1], gap="medium")
+        col_menu, col_map, col_r = st.columns([1.1, 1.8, 1.1], gap="medium")
         with col_menu:
             render_directions_drawer(is_realworld)
         with col_map:
             _render_map(primary_result, is_realworld, map_height=560)
-        with col_bmarks:
-            render_bookmarks_panel(is_realworld)
+        with col_r:
+            render_right_panel(is_realworld)
     elif show_left and not show_right:
         col_menu, col_map = st.columns([1.1, 2.9], gap="medium")
         with col_menu:
             render_directions_drawer(is_realworld)
         with col_map:
+            has_loc = bool(st.session_state.get("dest_coords") or st.session_state.get("start_coords") or st.session_state.get("searched_location"))
+            if has_loc and not st.session_state.get("show_info_panel", False):
+                c_sp, c_unhide = st.columns([7.8, 2.2])
+                with c_unhide:
+                    st.button("🏛️ Show Place Info", key="btn_unhide_info_side_l", on_click=_open_place_info_panel, use_container_width=True, help="Unhide location info panel")
             _render_map(primary_result, is_realworld, map_height=560)
     elif not show_left and show_right:
-        col_map, col_bmarks = st.columns([2.9, 1.1], gap="medium")
+        col_map, col_r = st.columns([2.9, 1.1], gap="medium")
         with col_map:
             _render_map(primary_result, is_realworld, map_height=560)
-        with col_bmarks:
-            render_bookmarks_panel(is_realworld)
+        with col_r:
+            render_right_panel(is_realworld)
     else:
+        has_loc = bool(st.session_state.get("dest_coords") or st.session_state.get("start_coords") or st.session_state.get("searched_location"))
+        if has_loc and not st.session_state.get("show_info_panel", False):
+            c_sp, c_unhide = st.columns([8.2, 1.8])
+            with c_unhide:
+                st.button("🏛️ Show Place Info", key="btn_unhide_info_side_full", on_click=_open_place_info_panel, use_container_width=True, help="Unhide location info panel")
         _render_map(primary_result, is_realworld, map_height=600)
 
-    # ── Bottom Control Bar: Buttons to Open/Close Directions and Bookmarks ──
+    # ── Bottom Control Bar: Buttons to Open/Close Directions, Info Panel, and Bookmarks ──
     st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
-    col_bottom_left, col_bottom_space, col_bottom_right = st.columns([2.0, 6.0, 2.0])
+    col_bottom_left, col_bottom_info, col_bottom_space, col_bottom_right = st.columns([2.0, 2.0, 4.0, 2.0])
     with col_bottom_left:
         if not st.session_state.show_route_menu:
             if st.button("🧭 Go (Directions)", type="primary", use_container_width=True, key="btn_go_bottom_left"):
@@ -1724,6 +2004,17 @@ def main() -> None:
             if st.button("✕ Close Directions", use_container_width=True, key="btn_close_directions_bottom"):
                 st.session_state.show_route_menu = False
                 st.rerun()
+
+    with col_bottom_info:
+        has_any_location = bool(
+            st.session_state.get("dest_coords")
+            or st.session_state.get("start_coords")
+            or st.session_state.get("searched_location")
+        )
+        if not st.session_state.get("show_info_panel", False):
+            st.button("🏛️ Place Info", type="secondary", use_container_width=True, key="btn_open_info_bottom", disabled=not has_any_location, on_click=_open_place_info_panel, help="View Wikipedia information for location or route")
+        else:
+            st.button("✕ Hide Place Info", use_container_width=True, key="btn_close_info_bottom", on_click=_close_place_info_panel)
 
     with col_bottom_right:
         if not st.session_state.show_bookmarks:
