@@ -1993,6 +1993,46 @@ class TestClickToRouteDashboard(unittest.TestCase):
         self.assertIn("Point A (Start)", html_str)
         self.assertIn("Point B (Destination)", html_str)
 
+    def test_map_picker_mode_initialization(self) -> None:
+        """Verify map_picker_mode initializes to None so clicks do nothing by default."""
+        import streamlit as st
+        from app import init_session_state
+        init_session_state()
+        self.assertIsNone(st.session_state.get("map_picker_mode"))
+
+    def test_reset_click_to_route_clears_picker_mode(self) -> None:
+        """Verify reset_click_to_route resets active picker mode to None."""
+        import streamlit as st
+        from app import reset_click_to_route
+        st.session_state.map_picker_mode = "origin"
+        reset_click_to_route()
+        self.assertIsNone(st.session_state.get("map_picker_mode"))
+
+    def test_clear_global_search_pin_clears_search_picker(self) -> None:
+        """Verify clear_global_search_pin resets picker mode if it was in search mode."""
+        import streamlit as st
+        from app import clear_global_search_pin
+        st.session_state.map_picker_mode = "search"
+        clear_global_search_pin()
+        self.assertIsNone(st.session_state.get("map_picker_mode"))
+
+    def test_picker_toggle_transitions(self) -> None:
+        """Verify toggling map_picker_mode between modes and None."""
+        import streamlit as st
+        st.session_state.map_picker_mode = None
+        # Toggle origin on
+        st.session_state.map_picker_mode = "origin"
+        self.assertEqual(st.session_state.map_picker_mode, "origin")
+        # Toggle origin off
+        st.session_state.map_picker_mode = None
+        self.assertIsNone(st.session_state.map_picker_mode)
+        # Toggle destination on
+        st.session_state.map_picker_mode = "destination"
+        self.assertEqual(st.session_state.map_picker_mode, "destination")
+        # Switch to search
+        st.session_state.map_picker_mode = "search"
+        self.assertEqual(st.session_state.map_picker_mode, "search")
+
 
 class TestAirQualityIndex(unittest.TestCase):
     """Test suite for WAQI (World Air Quality Index) service and map visualization."""

@@ -314,6 +314,8 @@ def init_session_state() -> None:
     # Interactive Click-to-Route state (Zero-typing direct map interaction)
     if "click_to_route_mode" not in st.session_state:
         st.session_state.click_to_route_mode = True
+    if "map_picker_mode" not in st.session_state:
+        st.session_state.map_picker_mode = None  # None, "origin", "destination", or "search"
     if "last_handled_click" not in st.session_state:
         st.session_state.last_handled_click = None
     if "click_route_step" not in st.session_state:
@@ -828,6 +830,8 @@ def clear_global_search_pin() -> None:
     st.session_state.searched_address = None
     st.session_state.prev_search_suggestion = None
     st.session_state.global_search_input = ""
+    if st.session_state.get("map_picker_mode") == "search":
+        st.session_state.map_picker_mode = None
     if not (st.session_state.get("start_coords") and st.session_state.get("dest_coords")):
         st.session_state.show_info_panel = False
     else:
@@ -846,7 +850,8 @@ def reset_click_to_route() -> None:
     st.session_state.alternative_results = None
     st.session_state.click_route_step = "start"
     st.session_state.last_handled_click = None
-    st.toast("Ready! Touch or click any spot on the map to set Start (Point A).", icon="📍")
+    st.session_state.map_picker_mode = None
+    st.toast("Route cleared! Use 📍 Pointer beside fields to pick spots from the map.", icon="📍")
 
 
 def swap_endpoints(is_realworld: bool) -> None:
@@ -911,36 +916,58 @@ def render_click_to_route_dashboard_bar(is_realworld: bool) -> None:
     has_dest = bool(st.session_state.get("dest_coords"))
     has_route = bool(st.session_state.get("route_result") and st.session_state.route_result.found)
 
-    start_label = st.session_state.get("start_name") or "Waiting for click..."
-    dest_label = st.session_state.get("dest_name") or "Waiting for click..."
+    start_label = st.session_state.get("start_name") or "Not set"
+    dest_label = st.session_state.get("dest_name") or "Not set"
+    active_picker = st.session_state.get("map_picker_mode")
 
-    if not has_start:
-        status_msg = "👉 <b>Step 1:</b> Touch or click <b>any spot</b> on the giant live map below to set <b>Point A (Start)</b>. Zero typing required!"
-        status_icon = "📍"
+    if active_picker == "origin":
+        status_msg = "🎯 <b>Map Pointer Active:</b> Click <b>any spot on the map</b> to set <b>Origin (From)</b> — or click Cancel."
+        status_icon = "🚩"
         status_bg = "#EFF6FF"
-        status_border = "#93C5FD"
+        status_border = "#3B82F6"
         status_text = "#1E40AF"
-    elif has_start and not has_dest:
-        status_msg = f"🎯 <b>Point A Set:</b> <b>{start_label}</b>! Now touch or click <b>any spot</b> for <b>Point B (Destination)</b> — path draws instantly!"
+    elif active_picker == "destination":
+        status_msg = "🎯 <b>Map Pointer Active:</b> Click <b>any spot on the map</b> to set <b>Destination (To)</b> — or click Cancel."
         status_icon = "🏁"
-        status_bg = "#FEF3C7"
-        status_border = "#FCD34D"
+        status_bg = "#FEF2F2"
+        status_border = "#EF4444"
+        status_text = "#991B1B"
+    elif active_picker == "search":
+        status_msg = "🎯 <b>Map Pointer Active:</b> Click <b>any spot on the map</b> to select and <b>search that location</b> — or click Cancel."
+        status_icon = "🔍"
+        status_bg = "#FFFBEB"
+        status_border = "#F59E0B"
         status_text = "#92400E"
-    else:
+    elif has_route:
         res = st.session_state.route_result
-        if res and res.found:
-            dist_s = f"{res.total_distance/1000:.2f} km" if res.total_distance >= 1000 else f"{res.total_distance:.0f} m"
-            drive_eta = estimate_travel_time(res.total_distance, speed_kmh=30.0)
-            status_msg = f"⚡ <b>Path Drawn:</b> <b>{start_label}</b> ➔ <b>{dest_label}</b> &nbsp;|&nbsp; 📏 <b>{dist_s}</b> &nbsp;|&nbsp; 🚗 ~{drive_eta} &nbsp;|&nbsp; 🛣️ {len(res.legs)} legs"
-        else:
-            status_msg = f"🧭 Endpoints set: <b>{start_label}</b> ➔ <b>{dest_label}</b>"
+        dist_s = f"{res.total_distance/1000:.2f} km" if res.total_distance >= 1000 else f"{res.total_distance:.0f} m"
+        drive_eta = estimate_travel_time(res.total_distance, speed_kmh=30.0)
+        status_msg = f"⚡ <b>Path Drawn:</b> <b>{start_label}</b> ➔ <b>{dest_label}</b> &nbsp;|&nbsp; 📏 <b>{dist_s}</b> &nbsp;|&nbsp; 🚗 ~{drive_eta} &nbsp;|&nbsp; 🛣️ {len(res.legs)} legs"
         status_icon = "🚀"
         status_bg = "#ECFDF5"
         status_border = "#6EE7B7"
         status_text = "#065F46"
+    elif has_start and not has_dest:
+        status_msg = f"🚩 <b>Origin Set:</b> <b>{start_label}</b>. Click <b>📍 Pointer</b> beside Destination (or type) to select Point B."
+        status_icon = "🚩"
+        status_bg = "#FEF3C7"
+        status_border = "#FCD34D"
+        status_text = "#92400E"
+    elif has_dest and not has_start:
+        status_msg = f"🏁 <b>Destination Set:</b> <b>{dest_label}</b>. Click <b>📍 Pointer</b> beside Origin (or type) to select Point A."
+        status_icon = "🏁"
+        status_bg = "#EFF6FF"
+        status_border = "#93C5FD"
+        status_text = "#1E40AF"
+    else:
+        status_msg = "🗺️ <b>Map Ready:</b> Pan & zoom freely. Toggle the <b>📍 Pointer</b> button beside Search, Origin, or Destination to pick locations directly from the map without typing!"
+        status_icon = "🗺️"
+        status_bg = "#F8FAFC"
+        status_border = "#CBD5E1"
+        status_text = "#334155"
 
-    badge_a = "done" if has_start else "active"
-    badge_b = "done" if has_dest else ("active" if has_start else "pending")
+    badge_a = "done" if has_start else ("active" if active_picker == "origin" else "pending")
+    badge_b = "done" if has_dest else ("active" if active_picker == "destination" else "pending")
 
     st.markdown(
         f"""
@@ -951,11 +978,11 @@ def render_click_to_route_dashboard_bar(is_realworld: bool) -> None:
             </div>
             <div style="display:flex; align-items:center; gap:8px;">
                 <span class="click-step-badge {badge_a}">
-                    {'✓' if has_start else '1'} 📍 Point A: {start_label[:20] + '…' if len(start_label) > 20 else start_label}
+                    {'✓' if has_start else ('🎯' if active_picker == 'origin' else '1')} 📍 Point A: {start_label[:20] + '…' if len(start_label) > 20 else start_label}
                 </span>
                 <span style="color:#94A3B8; font-weight:700;">➔</span>
                 <span class="click-step-badge {badge_b}">
-                    {'✓' if has_dest else '2'} 🏁 Point B: {dest_label[:20] + '…' if len(dest_label) > 20 else dest_label}
+                    {'✓' if has_dest else ('🎯' if active_picker == 'destination' else '2')} 🏁 Point B: {dest_label[:20] + '…' if len(dest_label) > 20 else dest_label}
                 </span>
             </div>
         </div>
@@ -966,7 +993,7 @@ def render_click_to_route_dashboard_bar(is_realworld: bool) -> None:
     # Action bar directly above the giant map
     col_a1, col_a2, col_a3, col_a4, col_a5 = st.columns([1.6, 1.4, 1.7, 1.5, 1.8])
     with col_a1:
-        if st.button("🔄 New 2-Click Route", key="btn_reset_click_nav", use_container_width=True, help="Clear endpoints to touch 2 new spots"):
+        if st.button("🔄 Clear / New Route", key="btn_reset_click_nav", use_container_width=True, help="Clear endpoints and route"):
             reset_click_to_route()
             st.rerun()
     with col_a2:
@@ -985,12 +1012,18 @@ def render_click_to_route_dashboard_bar(is_realworld: bool) -> None:
             st.session_state.map_height_setting = next_h
             st.rerun()
     with col_a5:
-        beh = st.session_state.get("click_behavior", "update_dest")
-        beh_text = "🎯 Move Dest on Click" if beh == "update_dest" else "📍 New Pair on Click"
-        next_beh = "new_route" if beh == "update_dest" else "update_dest"
-        if st.button(f"{beh_text}", key="btn_beh_toggle_nav", use_container_width=True, help="Control behavior when clicking map after route is drawn"):
-            st.session_state.click_behavior = next_beh
-            st.rerun()
+        if active_picker:
+            if st.button("✕ Cancel Pointer", key="btn_cancel_picker_dash", type="primary", use_container_width=True, help="Cancel active map pointer selection"):
+                st.session_state.map_picker_mode = None
+                st.toast("Pointer mode cancelled.", icon="ℹ️")
+                st.rerun()
+        else:
+            beh = st.session_state.get("click_behavior", "update_dest")
+            beh_text = "🎯 Move Dest on Click" if beh == "update_dest" else "📍 New Pair on Click"
+            next_beh = "new_route" if beh == "update_dest" else "update_dest"
+            if st.button(f"{beh_text}", key="btn_beh_toggle_nav", use_container_width=True, help="Control behavior when clicking map after route is drawn"):
+                st.session_state.click_behavior = next_beh
+                st.rerun()
 
 
 def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_height: int = 580) -> None:
@@ -1109,10 +1142,12 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
             icon=folium.Icon(color="orange", icon="star", prefix="fa"),
         ).add_to(folium_map)
 
-    folium_map.get_root().html.add_child(
-        folium.Element("<style>.leaflet-container { cursor: crosshair !important; }</style>")
-    )
+    if st.session_state.get("map_picker_mode") is not None:
+        folium_map.get_root().html.add_child(
+            folium.Element("<style>.leaflet-container { cursor: crosshair !important; }</style>")
+        )
 
+    picker_sig = st.session_state.get("map_picker_mode") or "none"
     start_sig = f"{st.session_state.start_coords}" if st.session_state.get("start_coords") else "no_start"
     dest_sig = f"{st.session_state.dest_coords}" if st.session_state.get("dest_coords") else "no_dest"
     click_step_sig = st.session_state.get("click_route_step", "start")
@@ -1124,6 +1159,7 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
         "bm_panel" if st.session_state.get("show_bookmarks") else "no_bm",
         "info_panel" if st.session_state.get("show_info_panel") else "no_info",
         aqi_sig,
+        picker_sig,
         route_signature,
         get_traffic_mode() or "distance",
         st.session_state.departure_time.strftime("%H:%M"),
@@ -1149,10 +1185,74 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
 
         if click_point != st.session_state.get("last_handled_click"):
             st.session_state.last_handled_click = click_point
-            st.session_state.last_clicked_coords = (click_lat, click_lon)
 
-            # If AQI mode is active, tapping the map inspects that specific location's AQI
-            if st.session_state.get("show_aqi_mode", False):
+            active_picker = st.session_state.get("map_picker_mode")
+
+            if active_picker == "origin":
+                st.session_state.last_clicked_coords = (click_lat, click_lon)
+                place_name = reverse_geocode(click_lat, click_lon) or f"Location ({click_lat:.4f}, {click_lon:.4f})"
+                st.session_state.start_name = place_name
+                st.session_state.start_coords = (click_lat, click_lon)
+                st.session_state.start_address = place_name
+                st.session_state.origin_status_msg = f"✓ Set: {place_name}"
+                st.session_state.origin_alternatives = []
+                st.session_state.map_picker_mode = None
+                st.session_state.show_route_menu = True
+
+                if st.session_state.get("dest_coords") and st.session_state.get("dest_name"):
+                    try:
+                        compute_routes(is_realworld)
+                        if st.session_state.route_result and st.session_state.route_result.found:
+                            d_m = st.session_state.route_result.total_distance
+                            d_str = f"{d_m/1000:.2f} km" if d_m >= 1000 else f"{d_m:.0f} m"
+                            st.toast(f"🚩 Origin set to '{place_name}'! Route drawn ({d_str}).", icon="🚀")
+                    except Exception:
+                        st.session_state.route_result = None
+                        st.toast(f"🚩 Origin set to '{place_name}'!", icon="🚩")
+                else:
+                    st.session_state.route_result = None
+                    st.toast(f"🚩 Origin set to '{place_name}'! Now select or pick Destination.", icon="🚩")
+                st.rerun()
+
+            elif active_picker == "destination":
+                st.session_state.last_clicked_coords = (click_lat, click_lon)
+                place_name = reverse_geocode(click_lat, click_lon) or f"Location ({click_lat:.4f}, {click_lon:.4f})"
+                st.session_state.dest_name = place_name
+                st.session_state.dest_coords = (click_lat, click_lon)
+                st.session_state.dest_address = place_name
+                st.session_state.dest_status_msg = f"✓ Set: {place_name}"
+                st.session_state.dest_alternatives = []
+                st.session_state.map_picker_mode = None
+                st.session_state.show_route_menu = True
+
+                if st.session_state.get("start_coords") and st.session_state.get("start_name"):
+                    try:
+                        compute_routes(is_realworld)
+                        if st.session_state.route_result and st.session_state.route_result.found:
+                            d_m = st.session_state.route_result.total_distance
+                            d_str = f"{d_m/1000:.2f} km" if d_m >= 1000 else f"{d_m:.0f} m"
+                            st.toast(f"🏁 Destination set to '{place_name}'! Route drawn ({d_str}).", icon="🚀")
+                    except Exception:
+                        st.session_state.route_result = None
+                        st.toast(f"🏁 Destination set to '{place_name}'!", icon="🏁")
+                else:
+                    st.session_state.route_result = None
+                    st.toast(f"🏁 Destination set to '{place_name}'!", icon="🏁")
+                st.rerun()
+
+            elif active_picker == "search":
+                st.session_state.last_clicked_coords = (click_lat, click_lon)
+                place_name = reverse_geocode(click_lat, click_lon) or f"Location ({click_lat:.4f}, {click_lon:.4f})"
+                st.session_state.searched_location = (click_lat, click_lon, place_name)
+                st.session_state.searched_address = place_name
+                st.session_state.show_info_panel = True
+                st.session_state.info_panel_target = "searched"
+                st.session_state.map_picker_mode = None
+                st.toast(f"📍 Location selected: '{place_name}'!", icon="📍")
+                st.rerun()
+
+            elif st.session_state.get("show_aqi_mode", False):
+                st.session_state.last_clicked_coords = (click_lat, click_lon)
                 place_name = reverse_geocode(click_lat, click_lon) or f"Area ({click_lat:.4f}, {click_lon:.4f})"
                 st.session_state.aqi_inspect_coords = (click_lat, click_lon, place_name)
                 st.session_state.aqi_location_pending = False
@@ -1160,84 +1260,9 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
                 st.toast(f"🍃 Checking AQI for {place_name}...", icon="🍃")
                 st.rerun()
 
-            if st.session_state.get("click_to_route_mode", True):
-                start_is_set = bool(st.session_state.get("start_coords"))
-                dest_is_set = bool(st.session_state.get("dest_coords"))
-                step = st.session_state.get("click_route_step", "start")
-
-                if not start_is_set or step == "start":
-                    # STEP 1: Point A (Start)
-                    place_name = reverse_geocode(click_lat, click_lon)
-                    st.session_state.start_name = place_name
-                    st.session_state.start_coords = (click_lat, click_lon)
-                    st.session_state.start_address = place_name
-                    st.session_state.dest_name = None
-                    st.session_state.dest_coords = None
-                    st.session_state.dest_address = None
-                    st.session_state.route_result = None
-                    st.session_state.alternative_results = None
-                    st.session_state.searched_location = None
-                    st.session_state.click_route_step = "dest"
-                    st.toast(f"📍 Point A set to '{place_name}'! Now tap or click Point B on the map.", icon="🚩")
-                    st.rerun()
-
-                elif not dest_is_set or step == "dest":
-                    # STEP 2: Point B (Destination) + Instant Route Calculation
-                    from astar import haversine_distance
-                    if haversine_distance(st.session_state.start_coords, (click_lat, click_lon)) < 15.0:
-                        st.toast("⚠️ Point B is too close to Point A. Please click another spot on the map.", icon="📍")
-                    else:
-                        place_name = reverse_geocode(click_lat, click_lon)
-                        st.session_state.dest_name = place_name
-                        st.session_state.dest_coords = (click_lat, click_lon)
-                        st.session_state.dest_address = place_name
-                        st.session_state.searched_location = None
-                        st.session_state.click_route_step = "active"
-                        try:
-                            compute_routes(is_realworld)
-                            if st.session_state.route_result and st.session_state.route_result.found:
-                                d_m = st.session_state.route_result.total_distance
-                                d_str = f"{d_m/1000:.2f} km" if d_m >= 1000 else f"{d_m:.0f} m"
-                                st.toast(f"⚡ Path drawn instantly! Distance: {d_str}", icon="🚀")
-                        except Exception as e:
-                            st.session_state.route_result = None
-                            st.toast(f"Route calculation error: {e}", icon="❌")
-                        st.rerun()
-
-                else:
-                    # STEP 3: Route is already active
-                    beh = st.session_state.get("click_behavior", "update_dest")
-                    if beh == "update_dest":
-                        # Instant retargeting: Move destination to clicked spot and redraw path!
-                        place_name = reverse_geocode(click_lat, click_lon)
-                        st.session_state.dest_name = place_name
-                        st.session_state.dest_coords = (click_lat, click_lon)
-                        st.session_state.dest_address = place_name
-                        st.session_state.searched_location = None
-                        try:
-                            compute_routes(is_realworld)
-                            if st.session_state.route_result and st.session_state.route_result.found:
-                                d_m = st.session_state.route_result.total_distance
-                                d_str = f"{d_m/1000:.2f} km" if d_m >= 1000 else f"{d_m:.0f} m"
-                                st.toast(f"🎯 Re-routed destination to '{place_name}' ({d_str})!", icon="🔄")
-                        except Exception as e:
-                            st.session_state.route_result = None
-                        st.rerun()
-                    else:
-                        # Start new 2-click route from this spot
-                        place_name = reverse_geocode(click_lat, click_lon)
-                        st.session_state.start_name = place_name
-                        st.session_state.start_coords = (click_lat, click_lon)
-                        st.session_state.start_address = place_name
-                        st.session_state.dest_name = None
-                        st.session_state.dest_coords = None
-                        st.session_state.dest_address = None
-                        st.session_state.route_result = None
-                        st.session_state.alternative_results = None
-                        st.session_state.searched_location = None
-                        st.session_state.click_route_step = "dest"
-                        st.toast(f"📍 New Start set to '{place_name}'! Click Point B to route.", icon="🚩")
-                        st.rerun()
+            else:
+                # By default, clicking the map does NOT do anything!
+                pass
 
     if st.session_state.get("last_clicked_coords"):
         lat_c, lon_c = st.session_state.last_clicked_coords
@@ -1440,19 +1465,39 @@ def render_directions_drawer(is_realworld: bool) -> None:
             st.markdown(
                 """
                 <div style="background:#F8FAFC; border:1px dashed #CBD5E1; border-radius:8px; padding:8px 12px; margin-bottom:8px; color:#64748B; font-size:13px;">
-                    🚩 <i>No origin selected. Type below & press Enter.</i>
+                    🚩 <i>No origin selected. Type below, pick landmark, or click <b>📍 Pointer</b>.</i>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-        st.text_input(
-            "Search Origin:",
-            placeholder="Type any place & press Enter (e.g. Purulia, Eiffel Tower)...",
-            key="drawer_origin_search_input",
-            on_change=on_origin_search_enter,
-            label_visibility="collapsed",
-        )
+        col_orig_in, col_orig_ptr = st.columns([3.6, 1.4])
+        with col_orig_in:
+            st.text_input(
+                "Search Origin:",
+                placeholder="Type any place & press Enter (e.g. Purulia, Eiffel Tower)...",
+                key="drawer_origin_search_input",
+                on_change=on_origin_search_enter,
+                label_visibility="collapsed",
+            )
+        with col_orig_ptr:
+            is_orig_picking = st.session_state.get("map_picker_mode") == "origin"
+            orig_ptr_lbl = "📍 Active" if is_orig_picking else "📍 Pointer"
+            orig_ptr_tp = "primary" if is_orig_picking else "secondary"
+            if st.button(
+                orig_ptr_lbl,
+                key="btn_toggle_pick_origin",
+                type=orig_ptr_tp,
+                use_container_width=True,
+                help="Toggle pointer: Click anywhere on map to select Origin without typing",
+            ):
+                if is_orig_picking:
+                    st.session_state.map_picker_mode = None
+                    st.toast("Pointer mode cancelled.", icon="ℹ️")
+                else:
+                    st.session_state.map_picker_mode = "origin"
+                    st.toast("🎯 Map Pointer Active: Click anywhere on the map to set Origin!", icon="🚩")
+                st.rerun()
 
         if st.session_state.get("origin_status_msg"):
             st.caption(st.session_state.origin_status_msg)
@@ -1552,19 +1597,39 @@ def render_directions_drawer(is_realworld: bool) -> None:
             st.markdown(
                 """
                 <div style="background:#F8FAFC; border:1px dashed #CBD5E1; border-radius:8px; padding:8px 12px; margin-bottom:8px; color:#64748B; font-size:13px;">
-                    🏁 <i>No destination set. Type below & press Enter.</i>
+                    🏁 <i>No destination set. Type below, pick landmark, or click <b>📍 Pointer</b>.</i>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-        st.text_input(
-            "Search Destination:",
-            placeholder="Type any place & press Enter (e.g. Adra, Louvre Museum)...",
-            key="drawer_dest_search_input",
-            on_change=on_dest_search_enter,
-            label_visibility="collapsed",
-        )
+        col_dest_in, col_dest_ptr = st.columns([3.6, 1.4])
+        with col_dest_in:
+            st.text_input(
+                "Search Destination:",
+                placeholder="Type any place & press Enter (e.g. Adra, Louvre Museum)...",
+                key="drawer_dest_search_input",
+                on_change=on_dest_search_enter,
+                label_visibility="collapsed",
+            )
+        with col_dest_ptr:
+            is_dest_picking = st.session_state.get("map_picker_mode") == "destination"
+            dest_ptr_lbl = "📍 Active" if is_dest_picking else "📍 Pointer"
+            dest_ptr_tp = "primary" if is_dest_picking else "secondary"
+            if st.button(
+                dest_ptr_lbl,
+                key="btn_toggle_pick_dest",
+                type=dest_ptr_tp,
+                use_container_width=True,
+                help="Toggle pointer: Click anywhere on map to select Destination without typing",
+            ):
+                if is_dest_picking:
+                    st.session_state.map_picker_mode = None
+                    st.toast("Pointer mode cancelled.", icon="ℹ️")
+                else:
+                    st.session_state.map_picker_mode = "destination"
+                    st.toast("🎯 Map Pointer Active: Click anywhere on the map to set Destination!", icon="🏁")
+                st.rerun()
 
         if st.session_state.get("dest_status_msg"):
             st.caption(st.session_state.dest_status_msg)
@@ -2207,7 +2272,7 @@ def main() -> None:
 
     # ── Top Section: Search Bar & Current Location Controls ──────────────
     if is_realworld:
-        col_search_input, col_search_clear = st.columns([5, 1])
+        col_search_input, col_search_ptr, col_search_clear = st.columns([4.2, 1.3, 0.9])
         with col_search_input:
             search_val = st.text_input(
                 "Search location, landmark, or address:",
@@ -2215,6 +2280,24 @@ def main() -> None:
                 key="global_search_input",
                 label_visibility="collapsed",
             )
+        with col_search_ptr:
+            is_search_picking = st.session_state.get("map_picker_mode") == "search"
+            search_ptr_lbl = "📍 Active" if is_search_picking else "📍 Pointer"
+            search_ptr_tp = "primary" if is_search_picking else "secondary"
+            if st.button(
+                search_ptr_lbl,
+                key="btn_toggle_pick_search",
+                type=search_ptr_tp,
+                use_container_width=True,
+                help="Toggle pointer: Click anywhere on map to select and search that location without typing",
+            ):
+                if is_search_picking:
+                    st.session_state.map_picker_mode = None
+                    st.toast("Pointer mode cancelled.", icon="ℹ️")
+                else:
+                    st.session_state.map_picker_mode = "search"
+                    st.toast("🎯 Map Pointer Active: Click anywhere on the map to select & search this location!", icon="📍")
+                st.rerun()
         with col_search_clear:
             st.button(
                 "✕ Clear Pin",
