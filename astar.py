@@ -29,10 +29,12 @@ def haversine_distance(coord1: Tuple[float, float], coord2: Tuple[float, float])
     lat2, lon2 = coord2
 
     r_earth = 6_371_000.0  # Earth's mean radius in meters
-    phi1 = math.radians(lat1)
+    phi1 = math.radians(lat1) # converts degrees to radians
     phi2 = math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
+    dphi = math.radians(lat2 - lat1) # dphi is the difference in latitude
+    dlambda = math.radians(lon2 - lon1) # dlambda is the difference in longitude
+
+    # Haversine formula
 
     a = math.sin(dphi / 2.0) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2.0) ** 2
     # Guard against float precision drift exceeding 1.0
@@ -52,6 +54,16 @@ def default_geographic_heuristic(graph: Graph, node: str, target: str) -> float:
     if c1 is not None and c2 is not None:
         return haversine_distance(c1, c2)
     return 0.0
+
+    """
+    Get the coordinates of the current node.
+    Get the coordinates of the destination.
+    If both exist, calculate their straight-line distance.
+    If either coordinate is missing, return 0.0.
+        
+    If the straight-line distance to a destination is 3 km, the road route cannot be shorter than 3 km, assuming ordinary surface roads and matching distance units.
+    So the heuristic is a safe lower-bound estimate. That property is one of the reasons A* can find an optimal route.
+    """
 
 
 def find_shortest_path_astar(
@@ -91,6 +103,10 @@ def find_shortest_path_astar(
     if not graph.has_node(destination):
         raise KeyError(f"Destination location '{destination}' not found in the network.")
 
+    """
+    If you don't supply a custom heuristic, the program chooses a default.
+    If you're using normal distance costs, it uses the geographic distance heuristic.
+    """
     if heuristic is None:
         if cost_function is None:
             heuristic = default_geographic_heuristic
@@ -109,6 +125,15 @@ def find_shortest_path_astar(
     start_time = time.perf_counter()
 
     # Trivial case: source is the destination
+
+    # saftey 
+    '''
+    A path containing only the starting node.
+    No road segments.
+    A total distance of zero.
+    A successful result.
+    The execution time and visited-node count.
+    '''
     if source == destination:
         elapsed = time.perf_counter() - start_time
         return PathResult(
@@ -124,7 +149,11 @@ def find_shortest_path_astar(
             total_cost=0.0 if cost_function else None,
         )
 
-    # g_score: exact shortest cost known from source to each node
+    # Self learning Algorithm
+    """
+    g_score as remembering the best known price of reaching a location, and previous as remembering the steps taken to get there.
+    """
+    # g_score remembers the cheapest known cost from the starting point to each node.
     g_score: Dict[str, float] = {node: float("inf") for node in graph.get_nodes()}
     g_score[source] = 0.0
 
