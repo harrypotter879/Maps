@@ -7,3 +7,4 @@ venv/
 cache/
 *.html
 !browser_geolocation/index.html
+!browser_globe/index.html
