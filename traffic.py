@@ -1,4 +1,4 @@
-"""Deterministic, modelled traffic and travel-time estimates for Ranchi roads.
+"""Deterministic, modelled traffic and travel-time estimates for Indian roads.
 
 OSM highway tags are used when present. The bundled Ranchi cache predates
 highway-tag storage, so its unclassified roads use a conservative documented

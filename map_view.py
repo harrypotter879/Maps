@@ -14,6 +14,7 @@ Uses Folium to render interactive maps with:
 from __future__ import annotations
 import json
 import os
+import hashlib
 from typing import Any, List, Optional, Tuple
 
 from graph import Graph
@@ -73,12 +74,30 @@ def _add_traffic_layer(
                 locations=route_points, color="#FFFFFF", weight=12,
                 opacity=1.0, interactive=False,
             ).add_to(m)
-    # Group by the continuous color so hourly changes remain visible without
-    # creating one Leaflet layer for every road segment.
+    # Vary shades deterministically within each level so long routes do not
+    # render as one flat color while the traffic meaning remains clear.
+    level_palettes = {
+        LOW: ("#16A34A", "#22C55E", "#65A30D", "#84CC16"),
+        MEDIUM: ("#EAB308", "#F59E0B", "#FBBF24"),
+        HIGH: ("#DC2626", "#EF4444", "#F43F5E"),
+    }
+    varied_segments = []
+    for color, level, points in segments:
+        if route_path and len(points) > 1:
+            seed = f"{points[0]}:{points[-1]}:{level}".encode("utf-8")
+            palette = level_palettes[level]
+            color = palette[
+                int.from_bytes(hashlib.blake2s(seed, digest_size=2).digest(), "big")
+                % len(palette)
+            ]
+        varied_segments.append((color, level, points))
+
+    # Group by color so hourly changes remain visible without creating one
+    # Leaflet layer for every road segment.
     stroke_width = 9 if route_path else 4
     stroke_opacity = 0.95 if route_path else 0.62
     color_groups: Dict[Tuple[str, str], List[List[List[float]]]] = {}
-    for color, level, points in segments:
+    for color, level, points in varied_segments:
         color_groups.setdefault((color, level), []).append(points)
     for level in (LOW, MEDIUM, HIGH):
         for (color, group_level), lines in color_groups.items():

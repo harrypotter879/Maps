@@ -52,12 +52,30 @@ RANCHI_BOUNDS = {
     "max_lon": 85.47,
 }
 
+# Routing traffic estimates are intentionally limited to India. This broad
+# geographic gate covers the country and its commonly routed coastal/island
+# areas without treating overseas OSRM routes as India traffic routes.
+INDIA_BOUNDS = {
+    "min_lat": 6.0,
+    "max_lat": 37.5,
+    "min_lon": 68.0,
+    "max_lon": 98.0,
+}
+
 
 def is_in_ranchi(lat: float, lon: float) -> bool:
     """Return True if (lat, lon) coordinates fall within the Ranchi local network boundary."""
     return (
         RANCHI_BOUNDS["min_lat"] <= lat <= RANCHI_BOUNDS["max_lat"]
         and RANCHI_BOUNDS["min_lon"] <= lon <= RANCHI_BOUNDS["max_lon"]
+    )
+
+
+def is_in_india(lat: float, lon: float) -> bool:
+    """Return True when coordinates fall within India's routing area."""
+    return (
+        INDIA_BOUNDS["min_lat"] <= lat <= INDIA_BOUNDS["max_lat"]
+        and INDIA_BOUNDS["min_lon"] <= lon <= INDIA_BOUNDS["max_lon"]
     )
 
 

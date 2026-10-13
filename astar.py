@@ -25,7 +25,7 @@ def haversine_distance(coord1: Tuple[float, float], coord2: Tuple[float, float])
     geographical points, it is mathematically guaranteed to be an admissible and consistent
     heuristic for surface road networks (i.e. h(n) <= true road distance).
     """
-    lat1, lon1 = coord1
+    lat1, lon1 = coord1 
     lat2, lon2 = coord2
 
     r_earth = 6_371_000.0  # Earth's mean radius in meters
