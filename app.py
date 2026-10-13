@@ -363,6 +363,10 @@ def init_session_state() -> None:
         st.session_state.baseline_result = None  # shortest-by-distance route, for comparison
     if "traffic_notice" not in st.session_state:
         st.session_state.traffic_notice = None
+    if "isochrone_mode" not in st.session_state:
+        st.session_state.isochrone_mode = "drive"
+    if "isochrone_origin" not in st.session_state:
+        st.session_state.isochrone_origin = None
 
     # Air Quality (WAQI) Mode: off by default; directly activated via button
     if "show_aqi_mode" not in st.session_state:
@@ -741,6 +745,14 @@ def render_traffic_controls(is_realworld: bool) -> None:
         return
     with st.container(border=True):
         st.markdown("#### 🚦 Traffic-Aware Routing")
+        st.radio(
+            "Escape radius mode",
+            options=["drive", "walk"],
+            format_func=lambda mode: "🚗 Drive" if mode == "drive" else "🚶 Walk",
+            horizontal=True,
+            key="isochrone_mode",
+            help="Click the map to draw reachable 5, 10, and 15 minute areas.",
+        )
         st.radio(
             "Routing mode",
             options=[SHORTEST_DISTANCE, TRAFFIC_AWARE],
@@ -1254,6 +1266,8 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
                 show_hud=False,  # Keep map canvas clean!
                 traffic_mode=traffic_mode,
                 departure_time=st.session_state.departure_time,
+                isochrone_origin=st.session_state.get("isochrone_origin"),
+                isochrone_mode=st.session_state.get("isochrone_mode", "drive"),
                 show_aqi=st.session_state.get("show_aqi_mode", False),
                 aqi_data=active_aqi_data,
                 waqi_token=st.session_state.get("waqi_custom_token", "") or "demo",
@@ -1297,9 +1311,11 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
             dest_point=dest_pt,
             searched_point=st.session_state.searched_location,
             current_location=st.session_state.my_location,
-            graph=load_cached_osm_network() if (is_realworld and get_traffic_mode()) else None,
+            graph=load_cached_osm_network() if is_realworld else None,
             traffic_mode=get_traffic_mode() if is_realworld else None,
             departure_time=st.session_state.departure_time,
+            isochrone_origin=st.session_state.get("isochrone_origin"),
+            isochrone_mode=st.session_state.get("isochrone_mode", "drive"),
             show_aqi=st.session_state.get("show_aqi_mode", False),
             aqi_data=active_aqi_data,
             waqi_token=st.session_state.get("waqi_custom_token", "") or "demo",
@@ -1329,6 +1345,7 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
     picker_sig = st.session_state.get("map_picker_mode") or "none"
     start_sig = f"{st.session_state.start_coords}" if st.session_state.get("start_coords") else "no_start"
     dest_sig = f"{st.session_state.dest_coords}" if st.session_state.get("dest_coords") else "no_dest"
+    isochrone_sig = f"{st.session_state.get('isochrone_origin')}:{st.session_state.get('isochrone_mode', 'drive')}"
     click_step_sig = st.session_state.get("click_route_step", "start")
     route_signature = "-".join(str(node) for node in primary_result.path) if primary_result and primary_result.found else "preview"
     bm_signature = "-".join(f"{b['name']}:{b['lat']:.4f},{b['lon']:.4f}" for b in st.session_state.get("bookmarks", []))
@@ -1344,6 +1361,7 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
         bm_signature,
         start_sig,
         dest_sig,
+        isochrone_sig,
         click_step_sig,
         str(map_height),
     ))
@@ -1437,8 +1455,14 @@ def _render_map(primary_result: Optional[PathResult], is_realworld: bool, map_he
                 st.rerun()
 
             else:
-                # By default, clicking the map does NOT do anything!
-                pass
+                # A free map click becomes the center of the live escape radius.
+                st.session_state.last_clicked_coords = (click_lat, click_lon)
+                st.session_state.isochrone_origin = (click_lat, click_lon)
+                st.toast(
+                    f"Escape radius centered at {click_lat:.4f}, {click_lon:.4f}.",
+                    icon="🫧",
+                )
+                st.rerun()
 
     if st.session_state.get("last_clicked_coords"):
         lat_c, lon_c = st.session_state.last_clicked_coords

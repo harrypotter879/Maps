@@ -15,7 +15,8 @@ from __future__ import annotations
 import json
 import os
 import hashlib
-from typing import Any, List, Optional, Tuple
+import heapq
+from typing import Any, Dict, List, Optional, Tuple
 
 from graph import Graph
 from dijkstra import PathResult
@@ -44,6 +45,129 @@ def _extract_polyline_points(graph: Graph, path: List[str]) -> List[List[float]]
             if v_coord:
                 points.append([v_coord[0], v_coord[1]])
     return points
+
+
+def _isochrone_reachable_nodes(
+    graph: Graph,
+    origin: Tuple[float, float],
+    budgets_seconds: Tuple[int, ...],
+    travel_mode: str = "drive",
+    traffic_mode: Optional[str] = None,
+    departure_time: Any = None,
+) -> Dict[int, List[Tuple[float, float]]]:
+    """Return coordinates reachable within each time budget from a map point."""
+    from traffic import estimated_travel_time_seconds
+
+    origin_node, _ = graph.find_nearest_node(origin[0], origin[1])
+    max_budget = max(budgets_seconds)
+    costs: Dict[str, float] = {origin_node: 0.0}
+    queue: List[Tuple[float, str]] = [(0.0, origin_node)]
+    while queue:
+        elapsed, node = heapq.heappop(queue)
+        if elapsed != costs.get(node):
+            continue
+        if elapsed > max_budget:
+            continue
+        for edge in graph.get_neighbors(node):
+            if travel_mode == "walk":
+                edge_seconds = edge.weight / (4.5 * 1000.0 / 3600.0)
+            elif traffic_mode:
+                edge_seconds = estimated_travel_time_seconds(
+                    edge, departure_time, graph=graph, origin_node=node,
+                )
+            else:
+                edge_seconds = edge.weight / (30.0 * 1000.0 / 3600.0)
+            candidate = elapsed + edge_seconds
+            if candidate <= max_budget and candidate < costs.get(edge.destination, float("inf")):
+                costs[edge.destination] = candidate
+                heapq.heappush(queue, (candidate, edge.destination))
+
+    reachable: Dict[int, List[Tuple[float, float]]] = {}
+    for budget in budgets_seconds:
+        points = [
+            graph.get_node_coords(node)
+            for node, elapsed in costs.items()
+            if elapsed <= budget and graph.get_node_coords(node) is not None
+        ]
+        reachable[budget] = [(float(lat), float(lon)) for lat, lon in points]
+    return reachable
+
+
+def _convex_hull(points: List[Tuple[float, float]]) -> List[List[float]]:
+    """Build a small dependency-free convex hull in longitude/latitude space."""
+    unique = sorted(set(points), key=lambda point: (point[1], point[0]))
+    if len(unique) <= 2:
+        return [[lat, lon] for lat, lon in unique]
+
+    def cross(origin: Tuple[float, float], a: Tuple[float, float], b: Tuple[float, float]) -> float:
+        return (a[1] - origin[1]) * (b[0] - origin[0]) - (a[0] - origin[0]) * (b[1] - origin[1])
+
+    lower: List[Tuple[float, float]] = []
+    for point in unique:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], point) <= 0:
+            lower.pop()
+        lower.append(point)
+    upper: List[Tuple[float, float]] = []
+    for point in reversed(unique):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], point) <= 0:
+            upper.pop()
+        upper.append(point)
+    return [[lat, lon] for lat, lon in lower[:-1] + upper[:-1]]
+
+
+def _add_isochrone_layer(
+    m: Any,
+    graph: Optional[Graph],
+    origin: Optional[Tuple[float, float]],
+    travel_mode: str,
+    traffic_mode: Optional[str],
+    departure_time: Any,
+) -> None:
+    """Draw nested 5, 10, and 15 minute reachable areas around a clicked point."""
+    if graph is None or origin is None or not graph.has_coords():
+        return
+    import folium
+
+    budgets = (300, 600, 900)
+    try:
+        reachable = _isochrone_reachable_nodes(
+            graph, origin, budgets, travel_mode, traffic_mode, departure_time,
+        )
+    except (ValueError, KeyError):
+        return
+
+    colors = {300: "#16A34A", 600: "#F59E0B", 900: "#DC2626"}
+    labels = {300: "5 minutes", 600: "10 minutes", 900: "15 minutes"}
+    for budget in reversed(budgets):
+        hull = _convex_hull(reachable[budget])
+        if len(hull) < 3:
+            continue
+        folium.Polygon(
+            locations=hull,
+            color=colors[budget],
+            weight=2,
+            fill=True,
+            fill_color=colors[budget],
+            fill_opacity=0.16 if budget == 900 else 0.22,
+            popup=f"Reachable in {labels[budget]} by {travel_mode}",
+            tooltip=f"{labels[budget]} {travel_mode} reach",
+        ).add_to(m)
+
+    folium.Marker(
+        location=[origin[0], origin[1]],
+        tooltip=f"Escape radius origin · {travel_mode}",
+        icon=folium.DivIcon(
+            html='<div style="width:16px;height:16px;background:#2563EB;border:3px solid white;border-radius:50%;box-shadow:0 0 0 4px #2563EB66;transform:translate(-8px,-8px)"></div>',
+            icon_size=(16, 16), icon_anchor=(8, 8),
+        ),
+    ).add_to(m)
+    legend = folium.Element(
+        f'''<div style="position:fixed;bottom:24px;right:24px;z-index:9999;background:#fff;padding:10px 13px;border-radius:8px;box-shadow:0 2px 10px #0003;font:13px sans-serif;">
+        <b>Escape radius · {travel_mode.capitalize()}</b><br>
+        <span style="color:#16A34A">●</span> 5 min &nbsp; <span style="color:#F59E0B">●</span> 10 min &nbsp; <span style="color:#DC2626">●</span> 15 min
+        <div style="margin-top:5px;color:#64748B;font-size:11px;max-width:230px">Reachable road network from the selected point.</div></div>'''
+    )
+    m.get_root().html.add_child(legend)
 
 
 def _add_traffic_layer(
@@ -757,6 +881,8 @@ def build_empty_map(
     graph: Optional[Graph] = None,
     traffic_mode: Optional[str] = None,
     departure_time: Any = None,
+    isochrone_origin: Optional[Tuple[float, float]] = None,
+    isochrone_mode: str = "drive",
     show_aqi: bool = False,
     aqi_data: Optional[Dict[str, Any]] = None,
     waqi_token: str = "demo",
@@ -788,6 +914,10 @@ def build_empty_map(
         zoom_start=map_zoom,
         tiles="OpenStreetMap",
         control_scale=True,
+    )
+
+    _add_isochrone_layer(
+        m, graph, isochrone_origin, isochrone_mode, traffic_mode, departure_time,
     )
 
     if graph is not None and traffic_mode:
@@ -889,6 +1019,8 @@ def build_folium_map(
     show_hud: bool = True,
     traffic_mode: Optional[str] = None,
     departure_time: Any = None,
+    isochrone_origin: Optional[Tuple[float, float]] = None,
+    isochrone_mode: str = "drive",
     show_aqi: bool = False,
     aqi_data: Optional[Dict[str, Any]] = None,
     waqi_token: str = "demo",
@@ -909,6 +1041,8 @@ def build_folium_map(
             graph=graph,
             traffic_mode=traffic_mode,
             departure_time=departure_time,
+            isochrone_origin=isochrone_origin,
+            isochrone_mode=isochrone_mode,
             show_aqi=show_aqi,
             aqi_data=aqi_data,
             waqi_token=waqi_token,
@@ -922,6 +1056,10 @@ def build_folium_map(
         zoom_start=15,
         tiles="OpenStreetMap",
         control_scale=True,
+    )
+
+    _add_isochrone_layer(
+        m, graph, isochrone_origin, isochrone_mode, traffic_mode, departure_time,
     )
 
     all_bounds_points: List[List[float]] = [
@@ -1032,14 +1170,14 @@ def build_folium_map(
         # Standard clean user-friendly navigation HUD
         if alternative_results and len(alternative_results) > 1:
             for i, alt_res in enumerate(alternative_results):
-                if i == active_route_index or traffic_mode:
+                if i == active_route_index or not alt_res.found:
                     continue
                 alt_points = _extract_polyline_points(graph, alt_res.path)
                 all_bounds_points.extend(alt_points)
                 alt_dist = f"{alt_res.total_distance / 1000:.2f} km" if alt_res.total_distance >= 1000 else f"{alt_res.total_distance:.0f} meters"
                 folium.PolyLine(
                     locations=alt_points,
-                    color="#93C5FD",  # Light blue
+                    color="#A855F7",  # Purple
                     weight=5,
                     opacity=0.7,
                     popup=f"Alternative Route {i+1}<br>Distance: {alt_dist}",
@@ -1213,6 +1351,8 @@ def generate_interactive_map(
     show_aqi: bool = False,
     aqi_data: Optional[Dict[str, Any]] = None,
     waqi_token: str = "demo",
+    isochrone_origin: Optional[Tuple[float, float]] = None,
+    isochrone_mode: str = "drive",
 ) -> str:
     """
     Generate and save an interactive Folium HTML map visualizing calculated route(s).
@@ -1231,6 +1371,8 @@ def generate_interactive_map(
         current_location=current_location,
         show_algorithm_stats=show_algorithm_stats,
         include_search_bar=include_search_bar,
+        isochrone_origin=isochrone_origin,
+        isochrone_mode=isochrone_mode,
         show_aqi=show_aqi,
         aqi_data=aqi_data,
         waqi_token=waqi_token,
